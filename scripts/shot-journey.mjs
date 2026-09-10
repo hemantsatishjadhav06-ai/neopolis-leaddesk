@@ -1,0 +1,11 @@
+import { chromium } from 'playwright';
+const BASE = process.env.BASE || 'http://localhost:8090';
+const browser = await chromium.launch(); const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+const errors = []; page.on('pageerror', e => errors.push(e.message)); page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
+await page.goto(BASE + '/#/settings/outreach'); await page.waitForSelector('#authform');
+await page.fill('input[name=email]', process.env.EMAIL || 'admin@neopolis.test'); await page.fill('input[name=password]', process.env.PASSWORD || 'password123'); await page.click('#authform button[type=submit]');
+await page.waitForSelector('#journey .journey-step', { timeout: 10000 }); await page.waitForTimeout(500);
+await page.screenshot({ path: 'tests/screenshots/06-journey.png', fullPage: true });
+await page.click('[data-act=submit-templates]'); await page.waitForSelector('.modal [data-ok]'); await page.click('.modal [data-ok]'); await page.waitForTimeout(800);
+const txt = await page.textContent('.modal pre'); console.log('submit result contains d13:', txt.includes('neopolis_journey_d13_final'));
+await browser.close(); console.log(errors.length ? 'ERRORS: ' + errors.join('\n') : 'UI OK');
