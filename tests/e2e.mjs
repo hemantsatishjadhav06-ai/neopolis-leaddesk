@@ -130,7 +130,7 @@ try {
     let r = await api('/followups/run', { method: 'POST' }); assert.equal(r.result.skipped, 'send_mode off');
     await api('/settings', { method: 'PUT', body: { send_mode: 'test', test_recipients: '+919000000002', send_window_start: 0, send_window_end: 24 } });
     r = await api('/followups/run', { method: 'POST' }); assert.equal(r.result.sent, 1);
-    const d = await api('/leads/1'); assert.equal(d.lead.status, 'CONTACTED'); assert.equal(d.lead.followup_stage, 1); assert.equal(d.messages[0].type, 'template'); assert.equal(d.messages[0].template_name, 'neopolis_v2_d0_hello'); assert.ok(d.messages[0].body.startsWith('Hi Asha, this is Neopolis Infra'));
+    const d = await api('/leads/1'); assert.equal(d.lead.status, 'CONTACTED'); assert.equal(d.lead.followup_stage, 1); assert.equal(d.messages[0].type, 'template'); assert.equal(d.messages[0].template_name, 'neopolis_v3_d0_hello'); assert.ok(d.messages[0].body.startsWith('Hi Asha, this is Neopolis Infra'));
     r = await api('/followups/run', { method: 'POST' }); assert.equal(r.result.sent, 0); // day-2 step not due yet
     const sys = await api('/system'); assert.equal(sys.followups.journey.length, 6); assert.equal(sys.followups.journey.at(-1).day, 13);
     const sub = await api('/wa/submit-templates', { method: 'POST' }); assert.equal(sub.results.length, 6); // mock WABA already has the default journey → "already exists"
@@ -174,6 +174,20 @@ try {
     const d = await api('/leads/5');
     assert.equal(d.messages.length, 0); assert.equal(d.lead.followup_attempts, 0); assert.equal(d.lead.followup_stage, 0);
     await api('/settings', { method: 'PUT', body: { journey_steps: settings.journey_steps, test_recipients: '+919000000002' } });
+  });
+  await test('journey drip: the background run sends a few at a time, spaces runs out, and stops at the daily cap', async () => {
+    await api('/leads', { method: 'POST', body: { full_name: 'Drip Test', wa_number: '+919000000077' } });
+    await api('/settings', { method: 'PUT', body: { test_recipients: '+919000000005,+919000000077', journey_per_run: 1, journey_run_minutes: 20 } });
+    await api('/scheduler/tick', { method: 'POST' });
+    let last = (await api('/system')).followups.lastRun;
+    assert.equal(last.sent, 1); assert.equal(last.dailyCap, 40); assert.ok(last.dailyUsed >= 3); // Asha + Meera earlier, one now
+    await api('/scheduler/tick', { method: 'POST' });
+    last = (await api('/system')).followups.lastRun;
+    assert.equal(last.sent, 0); assert.equal(last.paced, true); assert.equal(last.due, 1); // next lead waits for the 20-minute gap
+    await api('/settings', { method: 'PUT', body: { journey_daily_cap: last.dailyUsed } });
+    const r = await api('/followups/run', { method: 'POST' }); // "Run now" skips the gap but not the daily cap
+    assert.equal(r.result.sent, 0); assert.equal(r.result.due, 1);
+    await api('/settings', { method: 'PUT', body: { journey_daily_cap: 40, journey_per_run: 2, journey_run_minutes: 20, test_recipients: '+919000000002' } });
   });
   await test('sheet mirror queue writes lead_status + last_reply and Client Replies rows', async () => {
     const r = await api('/sheet/flush', { method: 'POST' }); assert.equal(r.result.failed, 0); assert.equal(r.result.pending, 0);

@@ -26,20 +26,22 @@ RULES:
 
 // The 13-day nurture journey. Each step is one Meta template (first name = {{1}}), sent on "day" (24h multiples
 // after the Day-0 send) to leads who still have not replied. Any reply stops the journey and the AI takes over.
-// Written for replies: short, one question per message, answerable with one tap.
+// Written for replies: short, one question per message, answerable with one tap. The urgency rests only on
+// facts: landlord-share units are a fixed allocation per tower, and the 8–14% saving goes once they are booked.
+// No invented stock counts, deadlines or "other buyers" (false urgency breaks India's dark-pattern rules).
 export const DEFAULT_JOURNEY = [
-  { key: 'd0', day: 0, template: 'neopolis_v2_d0_hello', buttons: ['Send me options', 'Call me'],
-    text: "Hi {{1}}, this is Neopolis Infra 👋 You recently enquired about a home in West Hyderabad.\n\nWe have title-verified 3 & 4 BHK homes in Kokapet, Narsingi, Tellapur, Kollur and the Financial District, typically 8–14% below resale with zero brokerage.\n\nShall I send you 3 options that fit your budget?" },
-  { key: 'd2', day: 2, template: 'neopolis_v2_d2_area', buttons: ['Kokapet / Narsingi', 'Financial District', 'Tellapur / Kollur'],
-    text: "Hi {{1}}, which area would you like to live in? I'll shortlist homes there for you.\n\n• Kokapet: premium high-rises\n• Financial District, Narsingi, Tellapur, Manchirevula: mid-range\n• Kollur: the value entry point, from under ₹1 Cr\n\nTap an area below, or reply with another one." },
-  { key: 'd4', day: 4, template: 'neopolis_v2_d4_budget', buttons: ['Under ₹1.5 Cr', '₹1.5 – 2.5 Cr', '₹2.5 Cr+'],
-    text: "Hi {{1}}, what budget are you comfortable with? Then we'll only send homes that fit.\n\nOur options run from under ₹1 Cr to ₹3.5 Cr+, both ready-to-move and under construction." },
-  { key: 'd7', day: 7, template: 'neopolis_v2_d7_visit', buttons: ['Book a site visit', 'Call me first', 'Not right now'],
-    text: "Hi {{1}}, would you like to see a few homes in person? 🏡\n\nA consultant will show you around, with no obligation. Visits run every day, 9 AM to 9 PM. Tap below, or reply with a day and time that suits you." },
-  { key: 'd10', day: 10, template: 'neopolis_v2_d10_help', buttons: ['Home loan help', "I'm an NRI", 'Talk to a consultant'],
-    text: "Hi {{1}}, is something holding you back? We can usually help:\n\n• Home loans: possible in most cases\n• NRI buyers: a fully remote process\n• Paperwork: we handle pricing, agreements and registration\n\nWhat would help you most?" },
-  { key: 'd13', day: 13, template: 'neopolis_v2_d13_last', buttons: ['Send a shortlist', 'Maybe later', 'Not interested'],
-    text: "Hi {{1}}, this is my last message for now.\n\nIf you're still looking for a home in West Hyderabad, tap below and I'll send you a shortlist today. If the timing isn't right, no problem, just reply whenever you're ready 🙏" },
+  { key: 'd0', day: 0, template: 'neopolis_v3_d0_hello', buttons: ['Send me options', 'Call me'],
+    text: "Hi {{1}}, this is Neopolis Infra 👋 You recently enquired about a home in West Hyderabad.\n\nWe sell landlord-share 3 & 4 BHK homes: same towers as the developer, typically 8–14% below resale, zero brokerage. On a ₹2 Cr home that is roughly ₹16–28 lakh saved.\n\nEach tower has a limited number of these units. Shall I send you the ones still available?" },
+  { key: 'd2', day: 2, template: 'neopolis_v3_d2_area', buttons: ['Kokapet / Narsingi', 'Financial District', 'Tellapur / Kollur'],
+    text: "Hi {{1}}, the best landlord-share units are usually the first to be booked, so let's start with your area. Which one suits you?\n\n• Kokapet: premium high-rises\n• Financial District, Narsingi, Tellapur, Manchirevula: mid-range\n• Kollur: the value entry point, from under ₹1 Cr" },
+  { key: 'd4', day: 4, template: 'neopolis_v3_d4_budget', buttons: ['Under ₹1.5 Cr', '₹1.5 – 2.5 Cr', '₹2.5 Cr+'],
+    text: "Hi {{1}}, what budget are you comfortable with? Share it and I'll send you the units in that range before they're booked.\n\nOptions run from under ₹1 Cr to ₹3.5 Cr+, ready-to-move and under construction." },
+  { key: 'd7', day: 7, template: 'neopolis_v3_d7_visit', buttons: ['Book this weekend', 'Call me first', 'Not right now'],
+    text: "Hi {{1}}, the buyers who get the best landlord-share units are the ones who see them first 🏡\n\nVisit any day, 9 AM to 9 PM, with no obligation. A consultant shows you the units and the price gap against resale on the spot. Shall I book you in this weekend?" },
+  { key: 'd10', day: 10, template: 'neopolis_v3_d10_help', buttons: ['Home loan help', "I'm an NRI", 'Talk to a consultant'],
+    text: "Hi {{1}}, don't let paperwork cost you a good unit. We can usually help:\n\n• Home loans: possible in most cases\n• NRI buyers: a fully remote process\n• Pricing, agreements and registration: handled end-to-end\n\nWhat would help you most?" },
+  { key: 'd13', day: 13, template: 'neopolis_v3_d13_last', buttons: ['Send a shortlist', 'Maybe later', 'Not interested'],
+    text: "Hi {{1}}, this is my last message for now.\n\nLandlord-share units are limited, and once a tower's are booked, that 8–14% saving is gone. If you'd still like to see what's available, tap below and I'll send a shortlist today 🙏" },
 ];
 
 export const DEFAULTS = {
@@ -72,6 +74,10 @@ export const DEFAULTS = {
   templates_use_name_param: true,       // templates have {{1}} = first name
   max_followup_attempts: 3,
   journey_steps: JSON.stringify(DEFAULT_JOURNEY),
+  // Drip pacing for the automatic journey run: a backlog goes out gradually, not in one burst. 0 = no limit.
+  journey_per_run: 2,
+  journey_run_minutes: 20,
+  journey_daily_cap: 40,
 
   // Sheet
   sheet_sync_minutes: 10,

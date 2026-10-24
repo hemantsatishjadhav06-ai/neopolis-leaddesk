@@ -91,7 +91,7 @@ try {
     assert.equal(bridgeCalls.filter(c => c.op === 'updateRow').at(-1).values.lead_status, 'REPLIED');
   });
   await test('journey events record template sends and advance the stage', async () => {
-    const r = await ingest({ type: 'journey', items: [{ whatsapp_number: '+919000000002', full_name: 'Asha Rao', first_name: 'Asha', step: 0, day: 0, template: 'neopolis_v2_d0_hello', wa_message_id: 'wamid.J1', status: 'sent', newStatus: 'CONTACTED', row_number: 2 }, { whatsapp_number: '+919000000005', full_name: 'Sameer Khan', step: 0, day: 0, template: 'neopolis_v2_d0_hello', wa_message_id: '', status: 'failed: invalid number', newStatus: 'CONTACTED', row_number: 6 }] });
+    const r = await ingest({ type: 'journey', items: [{ whatsapp_number: '+919000000002', full_name: 'Asha Rao', first_name: 'Asha', step: 0, day: 0, template: 'neopolis_v3_d0_hello', wa_message_id: 'wamid.J1', status: 'sent', newStatus: 'CONTACTED', row_number: 2 }, { whatsapp_number: '+919000000005', full_name: 'Sameer Khan', step: 0, day: 0, template: 'neopolis_v3_d0_hello', wa_message_id: '', status: 'failed: invalid number', newStatus: 'CONTACTED', row_number: 6 }] });
     assert.equal(r.leads.length, 2);
     const p = await api('/leads/' + r.leads[0]); assert.equal(p.lead.status, 'CONTACTED'); assert.equal(p.lead.followup_stage, 1); assert.equal(p.messages[0].type, 'template'); assert.ok(p.messages[0].body.startsWith('Hi Asha'));
     const s = await api('/leads/' + r.leads[1]); assert.equal(s.lead.status, 'CREATED'); assert.equal(s.messages[0].status, 'failed');

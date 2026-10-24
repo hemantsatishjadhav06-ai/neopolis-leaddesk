@@ -2,7 +2,7 @@
 import { all, get, kvGet, kvSet, nowIso } from '../db.js';
 import { config } from '../config.js';
 import { getSetting, listFromCsv, getJourney, journeyStatus } from '../settings.js';
-import { inSendWindow, hoursSince, minutesSince } from '../util/time.js';
+import { inSendWindow, hoursSince, minutesSince, istParts } from '../util/time.js';
 import { getLead, updateLead, mirrorLead, audit } from './leads.js';
 import { sendTemplateOut, renderTemplateText } from './conversation.js';
 import { importFromSheet, processSheetQueue } from './sync.js';
@@ -64,17 +64,34 @@ function templateApproved(tpl, name) {
   return st ? st === 'APPROVED' : !tpl.complete; // missing from a partial listing → don't hold
 }
 
-export async function runFollowups({ maxPerRun = 40 } = {}) {
+// Journey templates Meta accepted since midnight IST.
+function journeySentToday() {
+  const since = new Date(`${istParts().date}T00:00:00+05:30`).toISOString();
+  return get(`SELECT COUNT(*) AS n FROM messages WHERE sender = 'system' AND type = 'template' AND wa_message_id IS NOT NULL AND created_at >= ?`, since).n;
+}
+
+// paced = the background loop: a few sends per run, runs spaced out. "Run now" skips the spacing; the daily cap
+// applies to both.
+export async function runFollowups({ maxPerRun = 40, paced = false } = {}) {
   if (config.brain === 'n8n') return { skipped: 'journey runs in n8n' };
   if (!wa.isConfigured()) return { skipped: 'whatsapp not configured' };
   const { due, inWindow, sendMode, journeyLength } = dueFollowups();
   if (sendMode === 'off') return { skipped: 'send_mode off', due: due.length };
   if (!inWindow) return { skipped: 'outside send window', due: due.length };
+  const dailyCap = Number(getSetting('journey_daily_cap')) || Infinity;
+  const dailyUsed = journeySentToday();
+  let limit = maxPerRun, waiting = false;
+  if (paced) {
+    limit = Number(getSetting('journey_per_run')) || maxPerRun;
+    const gap = Number(getSetting('journey_run_minutes')) || 0;
+    if (gap && minutesSince(kvGet('followups.lastSendAt')) < gap) { limit = 0; waiting = true; }
+  }
+  limit = Math.max(0, Math.min(limit, dailyCap - dailyUsed));
   let sent = 0, failed = 0, skipped = 0;
-  const tpl = due.some(d => d.allowed) ? await templateStatuses() : { status: null };
+  const tpl = limit && due.some(d => d.allowed) ? await templateStatuses() : { status: null };
   const awaitingApproval = new Set();
   for (const { lead, step, stage, allowed } of due) {
-    if (sent + failed >= maxPerRun) break;
+    if (sent + failed >= limit) break;
     if (!allowed) { skipped++; continue; }
     if (!templateApproved(tpl, step.template)) { skipped++; awaitingApproval.add(step.template); continue; }
     const fresh = getLead(lead.id);
@@ -110,7 +127,8 @@ export async function runFollowups({ maxPerRun = 40 } = {}) {
       mirrorLead(updated);
     }
   }
-  const result = { sent, failed, skipped, due: due.length, awaitingApproval: [...awaitingApproval], at: nowIso() };
+  if (paced && (sent || failed)) kvSet('followups.lastSendAt', nowIso());
+  const result = { sent, failed, skipped, due: due.length, dailyUsed: dailyUsed + sent, dailyCap: Number.isFinite(dailyCap) ? dailyCap : null, ...(waiting ? { paced: true } : {}), awaitingApproval: [...awaitingApproval], at: nowIso() };
   kvSet('followups.lastRun', result);
   return result;
 }
@@ -125,7 +143,7 @@ async function tick() {
       try { await importFromSheet(); } catch (e) { log.error('Sheet import failed', e); kvSet('sheet.lastError', { at: nowIso(), error: e.message, op: 'import' }); }
     }
     try { await processSheetQueue(); } catch (e) { log.error('Sheet queue failed', e); }
-    try { const r = await runFollowups(); if (r.sent || r.failed) log.info('Follow-ups', r); } catch (e) { log.error('Follow-up run failed', e); }
+    try { const r = await runFollowups({ paced: true }); if (r.sent || r.failed) log.info('Follow-ups', r); } catch (e) { log.error('Follow-up run failed', e); }
     try { await maybeBackup(); } catch (e) { log.error('Backup run failed', e); }
     try { await runMonitor(); } catch (e) { log.error('Monitor run failed', e); }
     cleanupSessions();
