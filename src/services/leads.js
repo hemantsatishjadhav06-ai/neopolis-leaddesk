@@ -47,7 +47,7 @@ export function createLead({ wa_number, full_name = '', email = '', source = 'ma
 }
 
 export function updateLead(id, patch, { userId = null, silent = false } = {}) {
-  const allowed = ['full_name', 'first_name', 'email', 'status', 'mode', 'assigned_to', 'outreach_paused', 'opted_out', 'qualified', 'qualified_at', 'handoff_reason', 'corridor', 'budget', 'timeline', 'configuration', 'funding', 'objective', 'language', 'raw_fields', 'followup_stage', 'first_contact_at', 'last_followup_at', 'followup_attempts', 'last_error', 'last_inbound_at', 'last_outbound_at', 'last_message_at', 'last_message_preview', 'unread_count', 'notes', 'sheet_row', 'sheet_tab'];
+  const allowed = ['full_name', 'first_name', 'email', 'status', 'mode', 'assigned_to', 'outreach_paused', 'opted_out', 'qualified', 'qualified_at', 'handoff_reason', 'corridor', 'budget', 'timeline', 'configuration', 'funding', 'objective', 'language', 'raw_fields', 'followup_stage', 'first_contact_at', 'last_followup_at', 'followup_attempts', 'followup_retry_at', 'last_error', 'last_inbound_at', 'last_outbound_at', 'last_message_at', 'last_message_preview', 'unread_count', 'notes', 'sheet_row', 'sheet_tab'];
   const sets = []; const vals = [];
   for (const [k, v] of Object.entries(patch)) {
     if (!allowed.includes(k)) continue;

@@ -3,7 +3,7 @@
 import { get } from '../db.js';
 import { config } from '../config.js';
 import { assertCanSend, noteSent, SendBlocked } from './guard.js';
-import { getSetting, listFromCsv, journeyStep, getJourney } from '../settings.js';
+import { getSetting, listFromCsv, journeyStep, getJourney, journeyStatus } from '../settings.js';
 import { normalizePhone, firstName } from '../util/normalize.js';
 import { stampIst } from '../util/time.js';
 import * as wa from './whatsapp.js';
@@ -58,12 +58,50 @@ export function ingestWebhook(body) {
         jobs.push(serial(m.from, () => handleInbound({ message: m, profileName: contact?.profile?.name || '', phoneNumberId }).catch(e => log.error('inbound failed', e))));
       }
       for (const s of value.statuses || []) {
-        try { updateMessageStatus(s.id, s.status, { error: s.errors?.[0] ? `${s.errors[0].title || ''} ${s.errors[0].message || ''} ${s.errors[0].error_data?.details || ''}`.trim() : null }); }
+        try { handleStatus(s); }
         catch (e) { log.warn('status update failed', e.message); }
       }
     }
   }
   return jobs.length;
+}
+
+// Meta accepts a send (returns a wamid) and reports what really happened later, in a status webhook.
+// A 'failed' status is the only sign that a "sent" message never reached the lead, so make it loud.
+function handleStatus(s) {
+  const err = s.errors?.[0];
+  const error = wa.describeDeliveryError(err);
+  const msg = updateMessageStatus(s.id, s.status, { error });
+  if (!msg || s.status !== 'failed') return;
+  log.warn(`Delivery failed for lead ${msg.lead_id} (${msg.template_name ? `template ${msg.template_name}` : msg.type}): ${error || 'no reason given'}`);
+  if (msg.sender === 'system' && msg.type === 'template' && config.brain !== 'n8n') journeyDeliveryFailed(msg, err?.code);
+}
+
+// Meta asks for at least 24h before resending a template it held back (131049).
+const JOURNEY_RETRY_HOURS = 24;
+
+// An undelivered journey template must not count as a completed step, or the lead shows as CONTACTED /
+// FOLLOWUP_n and the next step goes out days later to someone who never got this one. Roll the step back
+// so the scheduler retries it later, or stop outreach when a retry cannot succeed.
+function journeyDeliveryFailed(msg, code) {
+  const lead = getLead(msg.lead_id);
+  if (!lead || lead.last_inbound_at) return; // they replied — the journey is over anyway
+  const stage = getJourney().findIndex(s => s.template === msg.template_name);
+  if (stage < 0 || (lead.followup_stage || 0) !== stage + 1) return; // not the latest step any more
+  const paused = wa.PERMANENT_DELIVERY_ERRORS.has(Number(code));
+  const attempts = (lead.followup_attempts || 0) + 1;
+  const patch = {
+    followup_stage: stage,
+    status: stage === 0 ? 'CREATED' : journeyStatus(stage - 1),
+    followup_attempts: attempts,
+    followup_retry_at: new Date(Date.now() + JOURNEY_RETRY_HOURS * 36e5).toISOString(),
+    last_error: msg.error || 'Message failed',
+  };
+  if (stage === 0) patch.first_contact_at = null;
+  if (paused) patch.outreach_paused = 1;
+  const updated = updateLead(lead.id, patch);
+  audit('followup.failed', { leadId: lead.id, data: { template: msg.template_name, stage, error: patch.last_error, attempts, undelivered: true, paused } });
+  mirrorLead(updated);
 }
 
 export async function handleInbound({ message, profileName = '', phoneNumberId = '' }) {

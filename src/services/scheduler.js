@@ -31,6 +31,7 @@ export function dueFollowups({ ignoreWindow = false } = {}) {
   for (const l of rows) {
     const stage = l.followup_stage || 0;
     if (stage >= journey.length) continue;
+    if (l.followup_retry_at && Date.parse(l.followup_retry_at) > Date.now()) continue; // undelivered step, waiting to retry
     const step = journey[stage];
     const ready = stage === 0 || hoursSince(l.first_contact_at) >= step.day * 24;
     if (!ready) continue;
@@ -55,7 +56,7 @@ export async function runFollowups({ maxPerRun = 40 } = {}) {
     try {
       await sendTemplateOut(fresh, { name: step.template, bodyParams: params, sender: 'system', bodyText: renderTemplateText(step.key, fresh) });
       const ts = nowIso();
-      const updated = updateLead(fresh.id, { status: journeyStatus(stage), followup_stage: stage + 1, first_contact_at: fresh.first_contact_at || ts, last_followup_at: ts, followup_attempts: 0, last_error: null });
+      const updated = updateLead(fresh.id, { status: journeyStatus(stage), followup_stage: stage + 1, first_contact_at: fresh.first_contact_at || ts, last_followup_at: ts, followup_attempts: 0, followup_retry_at: null, last_error: null });
       audit('followup.sent', { leadId: fresh.id, data: { template: step.template, stage, day: step.day } });
       mirrorLead(updated);
       sent++;

@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS kv (
 db.exec(SCHEMA);
 
 // Idempotent column migrations (node:sqlite ships no migration tool; ADD COLUMN is cheap and safe).
-for (const [table, col, decl] of [['users', 'wa_number', 'TEXT']]) {
+for (const [table, col, decl] of [['users', 'wa_number', 'TEXT'], ['leads', 'followup_retry_at', 'TEXT']]) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
   if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${decl}`);
 }

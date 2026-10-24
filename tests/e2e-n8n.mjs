@@ -55,6 +55,7 @@ const test = async (name, fn) => { try { await fn(); passed++; console.log('  âœ
 try {
   await waitFor(async () => { try { return (await fetch(BASE + '/health')).ok; } catch { return false; } }, { timeout: 10000 });
   await api('/setup', { method: 'POST', body: { name: 'Hemant', email: 'admin@test.local', password: 'password123' } });
+  await api('/settings', { method: 'PUT', body: { reply_mode: 'live' } }); // reactive replies default to TEST
 
   await test('sheet import works through the n8n bridge', async () => {
     const t = await api('/sheet/test', { method: 'POST' }); assert.equal(t.result.name, 'fake bridge');

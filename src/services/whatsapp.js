@@ -58,6 +58,33 @@ export async function sendTemplate(to, { name, language = 'en', bodyParams = [],
   return { id: r.messages?.[0]?.id, raw: r };
 }
 
+// Meta accepts a send (returns a wamid) and reports delivery failures later, in a status webhook.
+// What the common asynchronous failure codes mean in practice
+// (https://developers.facebook.com/docs/whatsapp/cloud-api/support/error-codes).
+const DELIVERY_HINTS = {
+  131026: 'number cannot receive WhatsApp messages: not on WhatsApp, old app version, or terms not accepted',
+  131042: 'payment problem on the WhatsApp Business Account: check billing in Meta Business Manager',
+  131047: '24-hour window closed: only an approved template can be sent',
+  131048: 'spam rate limit on this sender number: check its quality rating in WhatsApp Manager',
+  131049: 'Meta held back this marketing template (per-user marketing limit): wait at least 24h before resending',
+  131050: 'the lead has stopped marketing messages from this business',
+  131056: 'too many messages to this lead in a short time',
+  130472: 'the lead is in a Meta marketing-message experiment',
+  132015: 'template paused for low quality',
+  132016: 'template permanently disabled for low quality',
+};
+// Failures a retry cannot fix: proactive outreach to that lead should stop.
+export const PERMANENT_DELIVERY_ERRORS = new Set([131021, 131026, 131050]);
+
+// One readable line from a status-webhook error, keeping Meta's code: "#131049 Message failed to send — … (hint)".
+export function describeDeliveryError(err) {
+  if (!err) return null;
+  const parts = [err.title, err.message, err.error_data?.details].map(s => String(s || '').trim()).filter(Boolean);
+  const text = [...new Set(parts)].join(' — ') || 'Delivery failed';
+  const hint = DELIVERY_HINTS[err.code];
+  return `${err.code ? `#${err.code} ` : ''}${text}${hint ? ` (${hint})` : ''}`;
+}
+
 export async function markRead(messageId, { phoneNumberId } = {}) {
   const pid = phoneNumberId || wa.phoneNumberId;
   if (wa.mock || !wa.token || !pid || !messageId) return;
