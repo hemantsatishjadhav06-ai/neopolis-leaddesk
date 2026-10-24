@@ -26,19 +26,20 @@ RULES:
 
 // The 13-day nurture journey. Each step is one Meta template (first name = {{1}}), sent on "day" (24h multiples
 // after the Day-0 send) to leads who still have not replied. Any reply stops the journey and the AI takes over.
+// Written for replies: short, one question per message, answerable with one tap.
 export const DEFAULT_JOURNEY = [
-  { key: 'd0', day: 0, template: 'neopolis_journey_d0_intro', buttons: ['Yes, share options', 'Book a site visit'],
-    text: "Hello {{1}}, thank you for your interest in premium residences in West Hyderabad 🏙️\n\nThis is the Neopolis Infra team. We are Hyderabad's landlord-share specialists — premium 3 & 4 BHK homes in Kokapet, Neopolis (Financial District), Narsingi, Tellapur, Manchirevula and Kollur, direct from the source with zero brokerage.\n\nMay I share a few handpicked, title-verified options that match what you're looking for?" },
-  { key: 'd2', day: 2, template: 'neopolis_journey_d2_value', buttons: ['Send me options', 'Call me'],
-    text: "Hi {{1}}, a quick note on why buyers choose landlord-share homes with Neopolis Infra:\n\n• Typically 8–14% below resale price in the same tower\n• Same tower, same specification and amenities as developer units\n• Every unit title-verified before we show it\n• Zero brokerage — you deal direct with the source\n\nWhich corridor are you considering? Reply with the area, or tap below and I'll send matching options." },
-  { key: 'd4', day: 4, template: 'neopolis_journey_d4_corridors', buttons: ['Under ₹1.5 Cr', '₹1.5 – 2.5 Cr', '₹2.5 Cr and above'],
-    text: "Hello {{1}}, here's a quick guide to our six West Hyderabad corridors:\n\n• Kollur — the value entry point, from under ₹1 Cr\n• Tellapur, Narsingi & Manchirevula — mid-range, strong appreciation belt\n• Neopolis (Financial District) — mid to premium, walk-to-work\n• Kokapet — premium high-rises, up to ₹3.5 Cr+\n\nReady-to-move and under-construction options in each. Which budget range fits you best?" },
-  { key: 'd7', day: 7, template: 'neopolis_journey_d7_visit', buttons: ['Book a site visit', 'Not right now'],
-    text: "Hi {{1}}, the best way to judge a home is to stand in it 🙂\n\nWe host site visits across Kokapet, Neopolis, Narsingi, Tellapur, Manchirevula and Kollur every day, 9 AM – 9 PM — no obligation, and a consultant walks you through pricing and paperwork on the spot.\n\nPick a slot here: https://calendly.com/your-team/30min — or simply reply with a day and time that suits you." },
-  { key: 'd10', day: 10, template: 'neopolis_journey_d10_help', buttons: ['Home loan help', 'NRI process', 'Talk to a consultant'],
-    text: "Hello {{1}}, if anything is holding you back, we can usually help:\n\n• Home loans — most of our units are loan-eligible with leading banks\n• NRI buyers — a fully remote process, from shortlist to registration\n• Documentation — we handle pricing, agreements and the Telangana registration process end-to-end\n\nWhat would be most useful for you right now?" },
-  { key: 'd13', day: 13, template: 'neopolis_journey_d13_final', buttons: ['Share a shortlist', 'Not interested'],
-    text: "Hi {{1}}, this is my last note for now from Neopolis Infra.\n\nIf the timing isn't right, no problem at all — we're just a message away whenever you're ready to explore premium homes in West Hyderabad. And if you'd still like a shortlist or a site visit, tap below and I'll arrange it today.\n\nWishing you the very best with your search 🙏" },
+  { key: 'd0', day: 0, template: 'neopolis_v2_d0_hello', buttons: ['Send me options', 'Call me'],
+    text: "Hi {{1}}, this is Neopolis Infra 👋 You recently enquired about a home in West Hyderabad.\n\nWe have title-verified 3 & 4 BHK homes in Kokapet, Narsingi, Tellapur, Kollur and the Financial District, typically 8–14% below resale with zero brokerage.\n\nShall I send you 3 options that fit your budget?" },
+  { key: 'd2', day: 2, template: 'neopolis_v2_d2_area', buttons: ['Kokapet / Narsingi', 'Financial District', 'Tellapur / Kollur'],
+    text: "Hi {{1}}, which area would you like to live in? I'll shortlist homes there for you.\n\n• Kokapet: premium high-rises\n• Financial District, Narsingi, Tellapur, Manchirevula: mid-range\n• Kollur: the value entry point, from under ₹1 Cr\n\nTap an area below, or reply with another one." },
+  { key: 'd4', day: 4, template: 'neopolis_v2_d4_budget', buttons: ['Under ₹1.5 Cr', '₹1.5 – 2.5 Cr', '₹2.5 Cr+'],
+    text: "Hi {{1}}, what budget are you comfortable with? Then we'll only send homes that fit.\n\nOur options run from under ₹1 Cr to ₹3.5 Cr+, both ready-to-move and under construction." },
+  { key: 'd7', day: 7, template: 'neopolis_v2_d7_visit', buttons: ['Book a site visit', 'Call me first', 'Not right now'],
+    text: "Hi {{1}}, would you like to see a few homes in person? 🏡\n\nA consultant will show you around, with no obligation. Visits run every day, 9 AM to 9 PM. Tap below, or reply with a day and time that suits you." },
+  { key: 'd10', day: 10, template: 'neopolis_v2_d10_help', buttons: ['Home loan help', "I'm an NRI", 'Talk to a consultant'],
+    text: "Hi {{1}}, is something holding you back? We can usually help:\n\n• Home loans: possible in most cases\n• NRI buyers: a fully remote process\n• Paperwork: we handle pricing, agreements and registration\n\nWhat would help you most?" },
+  { key: 'd13', day: 13, template: 'neopolis_v2_d13_last', buttons: ['Send a shortlist', 'Maybe later', 'Not interested'],
+    text: "Hi {{1}}, this is my last message for now.\n\nIf you're still looking for a home in West Hyderabad, tap below and I'll send you a shortlist today. If the timing isn't right, no problem, just reply whenever you're ready 🙏" },
 ];
 
 export const DEFAULTS = {

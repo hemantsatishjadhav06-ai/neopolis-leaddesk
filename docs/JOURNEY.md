@@ -2,83 +2,88 @@
 
 Six Meta **marketing templates**, sent only to leads who have not replied yet. The moment a lead replies (or taps a button), the journey stops and the AI concierge takes over. Anyone who says STOP / Not interested is opted out permanently. Sends happen 9 AM–8 PM IST. Footer on every message: *Neopolis Infra • Reply STOP to opt out*
 
-| Day | Template | Angle | Buttons |
+The messages are written to get a reply: short, one question each, and answerable with one tap. A button tap counts as a reply, so it opens the 24-hour window and the AI picks up the conversation from there.
+
+| Day | Template | Asks | Buttons |
 |---|---|---|---|
-| 0 | `neopolis_journey_d0_intro` | Introduction + permission to share options | Yes, share options · Book a site visit |
-| 2 | `neopolis_journey_d2_value` | Why landlord-share (8–14% below resale, zero brokerage) | Send me options · Call me |
-| 4 | `neopolis_journey_d4_corridors` | Corridor & budget guide (qualifies budget via buttons) | Under ₹1.5 Cr · ₹1.5 – 2.5 Cr · ₹2.5 Cr and above |
-| 7 | `neopolis_journey_d7_visit` | Site-visit invitation with booking link | Book a site visit · Not right now |
-| 10 | `neopolis_journey_d10_help` | Removing blockers: loans, NRI process, paperwork | Home loan help · NRI process · Talk to a consultant |
-| 13 | `neopolis_journey_d13_final` | Graceful close — door stays open | Share a shortlist · Not interested |
+| 0 | `neopolis_v2_d0_hello` | Reminds them of their enquiry; may we send 3 options? | Send me options · Call me |
+| 2 | `neopolis_v2_d2_area` | Which area? | Kokapet / Narsingi · Financial District · Tellapur / Kollur |
+| 4 | `neopolis_v2_d4_budget` | Which budget? | Under ₹1.5 Cr · ₹1.5 – 2.5 Cr · ₹2.5 Cr+ |
+| 7 | `neopolis_v2_d7_visit` | Would they like a site visit? | Book a site visit · Call me first · Not right now |
+| 10 | `neopolis_v2_d10_help` | What is holding them back? | Home loan help · I'm an NRI · Talk to a consultant |
+| 13 | `neopolis_v2_d13_last` | Last message: shortlist, later, or stop | Send a shortlist · Maybe later · Not interested |
 
 Cost: about ₹0.86 per marketing message in India → at most ₹5.20 per lead who never replies (most stop earlier).
 
-## Day 0 — neopolis_journey_d0_intro
+## Day 0 — neopolis_v2_d0_hello
 
-> Hello {{1}}, thank you for your interest in premium residences in West Hyderabad 🏙️
-> 
-> This is the Neopolis Infra team. We are Hyderabad's landlord-share specialists — premium 3 & 4 BHK homes in Kokapet, Neopolis (Financial District), Narsingi, Tellapur, Manchirevula and Kollur, direct from the source with zero brokerage.
-> 
-> May I share a few handpicked, title-verified options that match what you're looking for?
+> Hi {{1}}, this is Neopolis Infra 👋 You recently enquired about a home in West Hyderabad.
+>
+> We have title-verified 3 & 4 BHK homes in Kokapet, Narsingi, Tellapur, Kollur and the Financial District, typically 8–14% below resale with zero brokerage.
+>
+> Shall I send you 3 options that fit your budget?
 
-**Buttons:** `Yes, share options`  |  `Book a site visit`
+**Buttons:** `Send me options, Call me`
 
-## Day 2 — neopolis_journey_d2_value
+## Day 2 — neopolis_v2_d2_area
 
-> Hi {{1}}, a quick note on why buyers choose landlord-share homes with Neopolis Infra:
-> 
-> • Typically 8–14% below resale price in the same tower
-> • Same tower, same specification and amenities as developer units
-> • Every unit title-verified before we show it
-> • Zero brokerage — you deal direct with the source
-> 
-> Which corridor are you considering? Reply with the area, or tap below and I'll send matching options.
+> Hi {{1}}, which area would you like to live in? I'll shortlist homes there for you.
+>
+> • Kokapet: premium high-rises
+> • Financial District, Narsingi, Tellapur, Manchirevula: mid-range
+> • Kollur: the value entry point, from under ₹1 Cr
+>
+> Tap an area below, or reply with another one.
 
-**Buttons:** `Send me options`  |  `Call me`
+**Buttons:** `Kokapet / Narsingi, Financial District, Tellapur / Kollur`
 
-## Day 4 — neopolis_journey_d4_corridors
+## Day 4 — neopolis_v2_d4_budget
 
-> Hello {{1}}, here's a quick guide to our six West Hyderabad corridors:
-> 
-> • Kollur — the value entry point, from under ₹1 Cr
-> • Tellapur, Narsingi & Manchirevula — mid-range, strong appreciation belt
-> • Neopolis (Financial District) — mid to premium, walk-to-work
-> • Kokapet — premium high-rises, up to ₹3.5 Cr+
-> 
-> Ready-to-move and under-construction options in each. Which budget range fits you best?
+> Hi {{1}}, what budget are you comfortable with? Then we'll only send homes that fit.
+>
+> Our options run from under ₹1 Cr to ₹3.5 Cr+, both ready-to-move and under construction.
 
-**Buttons:** `Under ₹1.5 Cr`  |  `₹1.5 – 2.5 Cr`  |  `₹2.5 Cr and above`
+**Buttons:** `Under ₹1.5 Cr, ₹1.5 – 2.5 Cr, ₹2.5 Cr+`
 
-## Day 7 — neopolis_journey_d7_visit
+## Day 7 — neopolis_v2_d7_visit
 
-> Hi {{1}}, the best way to judge a home is to stand in it 🙂
-> 
-> We host site visits across Kokapet, Neopolis, Narsingi, Tellapur, Manchirevula and Kollur every day, 9 AM – 9 PM — no obligation, and a consultant walks you through pricing and paperwork on the spot.
-> 
-> Pick a slot here: https://calendly.com/your-team/30min — or simply reply with a day and time that suits you.
+> Hi {{1}}, would you like to see a few homes in person? 🏡
+>
+> A consultant will show you around, with no obligation. Visits run every day, 9 AM to 9 PM. Tap below, or reply with a day and time that suits you.
 
-**Buttons:** `Book a site visit`  |  `Not right now`
+**Buttons:** `Book a site visit, Call me first, Not right now`
 
-## Day 10 — neopolis_journey_d10_help
+## Day 10 — neopolis_v2_d10_help
 
-> Hello {{1}}, if anything is holding you back, we can usually help:
-> 
-> • Home loans — most of our units are loan-eligible with leading banks
-> • NRI buyers — a fully remote process, from shortlist to registration
-> • Documentation — we handle pricing, agreements and the Telangana registration process end-to-end
-> 
-> What would be most useful for you right now?
+> Hi {{1}}, is something holding you back? We can usually help:
+>
+> • Home loans: possible in most cases
+> • NRI buyers: a fully remote process
+> • Paperwork: we handle pricing, agreements and registration
+>
+> What would help you most?
 
-**Buttons:** `Home loan help`  |  `NRI process`  |  `Talk to a consultant`
+**Buttons:** `Home loan help, I'm an NRI, Talk to a consultant`
 
-## Day 13 — neopolis_journey_d13_final
+## Day 13 — neopolis_v2_d13_last
 
-> Hi {{1}}, this is my last note for now from Neopolis Infra.
-> 
-> If the timing isn't right, no problem at all — we're just a message away whenever you're ready to explore premium homes in West Hyderabad. And if you'd still like a shortlist or a site visit, tap below and I'll arrange it today.
-> 
-> Wishing you the very best with your search 🙏
+> Hi {{1}}, this is my last message for now.
+>
+> If you're still looking for a home in West Hyderabad, tap below and I'll send you a shortlist today. If the timing isn't right, no problem, just reply whenever you're ready 🙏
 
-**Buttons:** `Share a shortlist`  |  `Not interested`
+**Buttons:** `Send a shortlist, Maybe later, Not interested`
 
-_{{1}} is replaced with the lead's first name from the sheet. Text is editable any time in LeadDesk → Settings → Outreach; changed text must be re-submitted to Meta._
+_{{1}} is replaced with the lead's first name from the sheet ("there" when it is missing). "Not interested" matches an opt-out keyword, so tapping it opts the lead out. The button lines above are written exactly as the Settings editor expects them (comma separated), so button labels must never contain a comma._
+
+## Switching a live deployment to these messages
+
+The journey a running LeadDesk uses is stored in its database (Settings → Outreach), not taken from this file, so the new text has to be entered there. Meta has to approve every new template name before it can be sent:
+
+1. **Settings → Outreach:** set **Send mode** to **Off** and save, so nothing goes out while the new templates are in review.
+2. In **The journey**, replace each step's template name, text and buttons with the ones above (day numbers stay the same), and save.
+3. Click **Submit templates to Meta**. Each step shows PENDING, then APPROVED, usually within minutes to a few hours.
+4. Once all six show **APPROVED**, set **Send mode** back to **Live**.
+
+Leads keep their place in the journey: someone who already received Day 0 gets the new Day 2 next.
+
+Builds that include the template-approval check skip any step whose template is not APPROVED yet (Settings shows "waiting for Meta to approve …"), so step 1 is a safety net there. Older builds send anyway, and every send fails until Meta approves, using up each due lead's send attempts. On an older build, step 1 is required.

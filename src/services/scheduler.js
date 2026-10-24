@@ -40,6 +40,30 @@ export function dueFollowups({ ignoreWindow = false } = {}) {
   return { due, inWindow: ignoreWindow || inSendWindow(getSetting('send_window_start'), getSetting('send_window_end')), sendMode: getSetting('send_mode'), journeyLength: journey.length };
 }
 
+// Meta status of each template by name, refreshed every 10 minutes. A journey step only goes out once its
+// template is APPROVED, so a step renamed or rewritten in Settings waits for Meta's review instead of failing
+// and using up every due lead's attempts. status = null means the check itself failed: send as before.
+const TEMPLATE_CHECK_MS = 10 * 60 * 1000;
+let templateCache = { at: 0, status: null, complete: false };
+async function templateStatuses() {
+  if (Date.now() - templateCache.at < TEMPLATE_CHECK_MS) return templateCache;
+  try {
+    const r = await wa.listTemplates();
+    const status = new Map();
+    for (const t of r.data || []) if (status.get(t.name) !== 'APPROVED') status.set(t.name, t.status); // any language approved is enough
+    templateCache = { at: Date.now(), status, complete: !r.paging?.next };
+  } catch (e) {
+    log.warn('Could not check template approval', e.message);
+    templateCache = { at: Date.now(), status: null, complete: false };
+  }
+  return templateCache;
+}
+function templateApproved(tpl, name) {
+  if (!tpl.status) return true;
+  const st = tpl.status.get(name);
+  return st ? st === 'APPROVED' : !tpl.complete; // missing from a partial listing → don't hold
+}
+
 export async function runFollowups({ maxPerRun = 40 } = {}) {
   if (config.brain === 'n8n') return { skipped: 'journey runs in n8n' };
   if (!wa.isConfigured()) return { skipped: 'whatsapp not configured' };
@@ -47,9 +71,12 @@ export async function runFollowups({ maxPerRun = 40 } = {}) {
   if (sendMode === 'off') return { skipped: 'send_mode off', due: due.length };
   if (!inWindow) return { skipped: 'outside send window', due: due.length };
   let sent = 0, failed = 0, skipped = 0;
+  const tpl = due.some(d => d.allowed) ? await templateStatuses() : { status: null };
+  const awaitingApproval = new Set();
   for (const { lead, step, stage, allowed } of due) {
     if (sent + failed >= maxPerRun) break;
     if (!allowed) { skipped++; continue; }
+    if (!templateApproved(tpl, step.template)) { skipped++; awaitingApproval.add(step.template); continue; }
     const fresh = getLead(lead.id);
     if (!fresh || fresh.last_inbound_at || fresh.mode !== 'ai' || fresh.outreach_paused || (fresh.followup_stage || 0) !== stage) { skipped++; continue; }
     const params = getSetting('templates_use_name_param') ? [fresh.first_name || 'there'] : [];
@@ -83,7 +110,7 @@ export async function runFollowups({ maxPerRun = 40 } = {}) {
       mirrorLead(updated);
     }
   }
-  const result = { sent, failed, skipped, due: due.length, at: nowIso() };
+  const result = { sent, failed, skipped, due: due.length, awaitingApproval: [...awaitingApproval], at: nowIso() };
   kvSet('followups.lastRun', result);
   return result;
 }

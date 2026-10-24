@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { toWaId } from '../util/normalize.js';
 import { log } from '../logger.js';
+import { DEFAULT_JOURNEY } from '../settings.js';
 
 const wa = config.whatsapp;
 const BASE = () => `https://graph.facebook.com/${wa.graphVersion}`;
@@ -156,7 +157,7 @@ export async function subscribedApps(wabaId = wa.wabaId) {
   return graph('GET', `${wabaId}/subscribed_apps`, {});
 }
 export async function listTemplates(wabaId = wa.wabaId) {
-  if (wa.mock) return { data: [{ name: 'neopolis_intro_day0', status: 'APPROVED', language: 'en', category: 'MARKETING' }] };
+  if (wa.mock) return { data: DEFAULT_JOURNEY.map(s => ({ name: s.template, status: 'APPROVED', language: 'en', category: 'MARKETING' })) };
   return graph('GET', `${wabaId}/message_templates`, { query: { fields: 'name,status,language,category,components', limit: 100 } });
 }
 export async function createTemplate(wabaId = wa.wabaId, tpl) {

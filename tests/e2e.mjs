@@ -130,10 +130,10 @@ try {
     let r = await api('/followups/run', { method: 'POST' }); assert.equal(r.result.skipped, 'send_mode off');
     await api('/settings', { method: 'PUT', body: { send_mode: 'test', test_recipients: '+919000000002', send_window_start: 0, send_window_end: 24 } });
     r = await api('/followups/run', { method: 'POST' }); assert.equal(r.result.sent, 1);
-    const d = await api('/leads/1'); assert.equal(d.lead.status, 'CONTACTED'); assert.equal(d.lead.followup_stage, 1); assert.equal(d.messages[0].type, 'template'); assert.equal(d.messages[0].template_name, 'neopolis_journey_d0_intro'); assert.ok(d.messages[0].body.startsWith('Hello Asha'));
+    const d = await api('/leads/1'); assert.equal(d.lead.status, 'CONTACTED'); assert.equal(d.lead.followup_stage, 1); assert.equal(d.messages[0].type, 'template'); assert.equal(d.messages[0].template_name, 'neopolis_v2_d0_hello'); assert.ok(d.messages[0].body.startsWith('Hi Asha, this is Neopolis Infra'));
     r = await api('/followups/run', { method: 'POST' }); assert.equal(r.result.sent, 0); // day-2 step not due yet
     const sys = await api('/system'); assert.equal(sys.followups.journey.length, 6); assert.equal(sys.followups.journey.at(-1).day, 13);
-    const sub = await api('/wa/submit-templates', { method: 'POST' }); assert.equal(sub.results.length, 6); // mock WABA already has none of these → all "submitted"
+    const sub = await api('/wa/submit-templates', { method: 'POST' }); assert.equal(sub.results.length, 6); // mock WABA already has the default journey → "already exists"
     assert.ok(sub.results.every(x => x.status !== 'error'), JSON.stringify(sub.results));
   });
   // Meta returns a wamid for every accepted send and only later posts status=failed. That async failure
@@ -162,6 +162,18 @@ try {
     const d = await waitFor(async () => { const d = await api('/leads/4'); return d.lead.outreach_paused ? d : null; });
     assert.equal(d.lead.status, 'CREATED'); assert.equal(d.lead.followup_stage, 0); assert.match(d.lead.last_error, /^#131026 Message undeliverable/);
     await api('/settings', { method: 'PUT', body: { test_recipients: '+919000000002' } });
+  });
+  await test('a journey step waits until Meta approves its template (renamed step does not burn attempts)', async () => {
+    const { settings } = await api('/settings');
+    const journey = JSON.parse(settings.journey_steps);
+    journey[0].template = 'neopolis_v3_d0_not_approved_yet';
+    await api('/settings', { method: 'PUT', body: { journey_steps: JSON.stringify(journey), test_recipients: '+919000000005' } });
+    const r = await api('/followups/run', { method: 'POST' });
+    assert.equal(r.result.sent, 0); assert.equal(r.result.failed, 0);
+    assert.deepEqual(r.result.awaitingApproval, ['neopolis_v3_d0_not_approved_yet']);
+    const d = await api('/leads/5');
+    assert.equal(d.messages.length, 0); assert.equal(d.lead.followup_attempts, 0); assert.equal(d.lead.followup_stage, 0);
+    await api('/settings', { method: 'PUT', body: { journey_steps: settings.journey_steps, test_recipients: '+919000000002' } });
   });
   await test('sheet mirror queue writes lead_status + last_reply and Client Replies rows', async () => {
     const r = await api('/sheet/flush', { method: 'POST' }); assert.equal(r.result.failed, 0); assert.equal(r.result.pending, 0);
