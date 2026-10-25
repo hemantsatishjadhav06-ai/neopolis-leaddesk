@@ -38,6 +38,11 @@ export function activeSheetConfig() {
   };
 }
 
+// The leads tab(s) named in the connection: "02-08-2026, Sheet6" → ['02-08-2026', 'Sheet6']. Empty = auto-detect.
+export function configuredLeadTabs() {
+  return String(activeSheetConfig().leadsTab || '').split(',').map(s => s.trim()).filter(Boolean);
+}
+
 export function setSheetConnection(conn) { kvSet(KEY, conn); }
 export function clearSheetConnection() { kvSet(KEY, null); }
 

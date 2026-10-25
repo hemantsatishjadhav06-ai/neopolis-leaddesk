@@ -4,6 +4,7 @@ import { get } from '../db.js';
 import { config } from '../config.js';
 import { assertCanSend, noteSent, SendBlocked } from './guard.js';
 import { getSetting, listFromCsv, journeyStep, getJourney } from '../settings.js';
+import { reconcileJourney, stepOf } from './journey.js';
 import { normalizePhone, firstName } from '../util/normalize.js';
 import { stampIst } from '../util/time.js';
 import * as wa from './whatsapp.js';
@@ -58,12 +59,29 @@ export function ingestWebhook(body) {
         jobs.push(serial(m.from, () => handleInbound({ message: m, profileName: contact?.profile?.name || '', phoneNumberId }).catch(e => log.error('inbound failed', e))));
       }
       for (const s of value.statuses || []) {
-        try { updateMessageStatus(s.id, s.status, { error: s.errors?.[0] ? `${s.errors[0].title || ''} ${s.errors[0].message || ''} ${s.errors[0].error_data?.details || ''}`.trim() : null }); }
+        try { handleStatus(s); }
         catch (e) { log.warn('status update failed', e.message); }
       }
     }
   }
   return jobs.length;
+}
+
+// Meta accepts a send (returns a wamid) and reports what really happened later, in a status webhook.
+// A 'failed' status is the only sign that a "sent" message never reached the lead, so make it loud.
+function handleStatus(s) {
+  const err = s.errors?.[0];
+  const error = wa.describeDeliveryError(err);
+  const msg = updateMessageStatus(s.id, s.status, { error });
+  if (!msg || s.status !== 'failed') return;
+  log.warn(`Delivery failed for lead ${msg.lead_id} (${msg.template_name ? `template ${msg.template_name}` : msg.type}): ${error || 'no reason given'}`);
+  if (msg.type !== 'template' || config.brain === 'n8n') return;
+  // A journey step that did not arrive is not done: put the lead back on it now (the scheduler re-sends it after
+  // a retry gap, and never moves on to the next step until this one is delivered).
+  const journey = getJourney();
+  if (stepOf(msg, journey) < 0) return;
+  const lead = reconcileJourney(getLead(msg.lead_id), journey);
+  audit('followup.failed', { leadId: msg.lead_id, data: { template: msg.template_name, error: error || 'Message failed', undelivered: true, paused: !!lead?.outreach_paused } });
 }
 
 export async function handleInbound({ message, profileName = '', phoneNumberId = '' }) {
@@ -185,7 +203,7 @@ export async function sendOut(lead, { text, sender = 'human', userId = null, inR
   }
 }
 
-export async function sendTemplateOut(lead, { name, language, bodyParams = [], sender = 'system', userId = null, bodyText = '' }) {
+export async function sendTemplateOut(lead, { name, language, bodyParams = [], sender = 'system', userId = null, bodyText = '', meta = {} }) {
   const kind = sender === 'human' ? 'human' : 'journey';
   try {
     assertCanSend(lead, kind);
@@ -199,9 +217,9 @@ export async function sendTemplateOut(lead, { name, language, bodyParams = [], s
   try {
     const r = await wa.sendTemplate(lead.wa_number, { name, language: language || getSetting('template_language'), bodyParams });
     noteSent(kind);
-    return addMessage(lead.id, { direction: 'out', sender, sender_user_id: userId, type: 'template', template_name: name, body: bodyText, wa_message_id: r.id || null, status: 'sent', meta: { bodyParams } });
+    return addMessage(lead.id, { direction: 'out', sender, sender_user_id: userId, type: 'template', template_name: name, body: bodyText, wa_message_id: r.id || null, status: 'sent', meta: { ...meta, bodyParams } });
   } catch (e) {
-    addMessage(lead.id, { direction: 'out', sender, sender_user_id: userId, type: 'template', template_name: name, body: bodyText, status: 'failed', error: e.message, meta: { bodyParams } });
+    addMessage(lead.id, { direction: 'out', sender, sender_user_id: userId, type: 'template', template_name: name, body: bodyText, status: 'failed', error: e.message, meta: { ...meta, bodyParams } });
     updateLead(lead.id, { last_error: e.message }, { silent: true });
     throw e;
   }

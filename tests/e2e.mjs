@@ -130,11 +130,65 @@ try {
     let r = await api('/followups/run', { method: 'POST' }); assert.equal(r.result.skipped, 'send_mode off');
     await api('/settings', { method: 'PUT', body: { send_mode: 'test', test_recipients: '+919000000002', send_window_start: 0, send_window_end: 24 } });
     r = await api('/followups/run', { method: 'POST' }); assert.equal(r.result.sent, 1);
-    const d = await api('/leads/1'); assert.equal(d.lead.status, 'CONTACTED'); assert.equal(d.lead.followup_stage, 1); assert.equal(d.messages[0].type, 'template'); assert.equal(d.messages[0].template_name, 'neopolis_journey_d0_intro'); assert.ok(d.messages[0].body.startsWith('Hello Asha'));
+    const d = await api('/leads/1'); assert.equal(d.lead.status, 'CONTACTED'); assert.equal(d.lead.followup_stage, 1); assert.equal(d.messages[0].type, 'template'); assert.equal(d.messages[0].template_name, 'neopolis_v3_d0_hello'); assert.ok(d.messages[0].body.startsWith('Hi Asha, this is Neopolis Infra'));
     r = await api('/followups/run', { method: 'POST' }); assert.equal(r.result.sent, 0); // day-2 step not due yet
     const sys = await api('/system'); assert.equal(sys.followups.journey.length, 6); assert.equal(sys.followups.journey.at(-1).day, 13);
-    const sub = await api('/wa/submit-templates', { method: 'POST' }); assert.equal(sub.results.length, 6); // mock WABA already has none of these → all "submitted"
+    const sub = await api('/wa/submit-templates', { method: 'POST' }); assert.equal(sub.results.length, 6); // mock WABA already has the default journey → "already exists"
     assert.ok(sub.results.every(x => x.status !== 'error'), JSON.stringify(sub.results));
+  });
+  // Meta returns a wamid for every accepted send and only later posts status=failed. That async failure
+  // must not leave the lead marked CONTACTED with its journey advanced.
+  const failStatus = (id, code, title, details) => waPost({ object: 'whatsapp_business_account', entry: [{ changes: [{ value: { statuses: [{ id, status: 'failed', timestamp: '2', errors: [{ code, title, message: title, error_data: { details } }] }] } }] }] });
+  await test('undelivered journey template: Meta reason recorded, lead put back on that step, not re-sent straight away', async () => {
+    const tpl = (await api('/leads/1')).messages.find(m => m.type === 'template');
+    await failStatus(tpl.wa_message_id, 131049, 'This message was not delivered to maintain healthy ecosystem engagement.', 'Message failed to send because there are restrictions on how many messages can be sent.');
+    const d = await waitFor(async () => { const d = await api('/leads/1'); return d.lead.followup_stage === 0 ? d : null; });
+    const m = d.messages.find(x => x.id === tpl.id);
+    assert.equal(m.status, 'failed'); assert.match(m.error, /^#131049 This message was not delivered/); assert.match(m.error, /wait at least 24h/);
+    assert.equal(d.lead.status, 'CREATED'); assert.equal(d.lead.outreach_paused, false); assert.match(d.lead.last_error, /#131049/);
+    assert.ok(d.history.some(h => h.type === 'followup.failed' && h.data.undelivered));
+    const r = await api('/followups/run', { method: 'POST' });
+    assert.equal(r.result.sent, 0); assert.ok(r.result.waitingToResend >= 1); // re-sent only after the retry gap
+    await failStatus(tpl.wa_message_id, 131049, 'duplicate webhook delivery', '');
+    await sleep(200);
+    const again = (await api('/leads/1')).lead;
+    assert.equal(again.followup_stage, 0); assert.equal(again.outreach_paused, false); // a repeated status changes nothing
+  });
+  await test('undeliverable number (131026) stops outreach instead of retrying', async () => {
+    await api('/settings', { method: 'PUT', body: { test_recipients: '+919000000002,+919000000044' } });
+    assert.equal((await api('/followups/run', { method: 'POST' })).result.sent, 1); // Meera's Day-0 (Asha is waiting to retry)
+    const tpl = (await api('/leads/4')).messages.find(m => m.type === 'template');
+    await failStatus(tpl.wa_message_id, 131026, 'Message undeliverable', 'Unable to deliver message.');
+    const d = await waitFor(async () => { const d = await api('/leads/4'); return d.lead.outreach_paused ? d : null; });
+    assert.equal(d.lead.status, 'CREATED'); assert.equal(d.lead.followup_stage, 0); assert.match(d.lead.last_error, /^#131026 Message undeliverable/);
+    await api('/settings', { method: 'PUT', body: { test_recipients: '+919000000002' } });
+  });
+  await test('a journey step waits until Meta approves its template (renamed step does not burn attempts)', async () => {
+    const { settings } = await api('/settings');
+    const journey = JSON.parse(settings.journey_steps);
+    journey[0].template = 'neopolis_v3_d0_not_approved_yet';
+    await api('/settings', { method: 'PUT', body: { journey_steps: JSON.stringify(journey), test_recipients: '+919000000005' } });
+    const r = await api('/followups/run', { method: 'POST' });
+    assert.equal(r.result.sent, 0); assert.equal(r.result.failed, 0);
+    assert.deepEqual(r.result.awaitingApproval, ['neopolis_v3_d0_not_approved_yet']);
+    const d = await api('/leads/5');
+    assert.equal(d.messages.length, 0); assert.equal(d.lead.followup_attempts, 0); assert.equal(d.lead.followup_stage, 0);
+    await api('/settings', { method: 'PUT', body: { journey_steps: settings.journey_steps, test_recipients: '+919000000002' } });
+  });
+  await test('journey drip: the background run sends a few at a time, spaces runs out, and stops at the daily cap', async () => {
+    await api('/leads', { method: 'POST', body: { full_name: 'Drip Test', wa_number: '+919000000077' } });
+    await api('/settings', { method: 'PUT', body: { test_recipients: '+919000000005,+919000000077', journey_per_run: 1, journey_run_minutes: 20 } });
+    await api('/scheduler/tick', { method: 'POST' });
+    let last = (await api('/system')).followups.lastRun;
+    assert.equal(last.sent, 1); assert.equal(last.dailyCap, 40); assert.ok(last.dailyUsed >= 3); // Asha + Meera earlier, one now
+    await api('/scheduler/tick', { method: 'POST' });
+    last = (await api('/system')).followups.lastRun;
+    assert.equal(last.sent, 0); assert.equal(last.paced, true); assert.equal(last.due, 1); // next lead waits for the 20-minute gap
+    await api('/settings', { method: 'PUT', body: { journey_daily_cap: last.dailyUsed } });
+    const r = await api('/followups/run', { method: 'POST' }); // "Run now" skips the gap but not the daily cap
+    assert.equal(r.result.sent, 0); assert.equal(r.result.due, 1);
+    assert.ok(r.result.waitingForDelivery >= 1); // the lead just sent Day 0 waits for WhatsApp's receipt before anything else
+    await api('/settings', { method: 'PUT', body: { journey_daily_cap: 40, journey_per_run: 2, journey_run_minutes: 20, test_recipients: '+919000000002' } });
   });
   await test('sheet mirror queue writes lead_status + last_reply and Client Replies rows', async () => {
     const r = await api('/sheet/flush', { method: 'POST' }); assert.equal(r.result.failed, 0); assert.equal(r.result.pending, 0);
@@ -160,7 +214,7 @@ try {
     assert.equal(tampered.status, 403);                       // bad signature → rejected
     await sleep(200);
     const { rows } = await api('/leads?limit=200');
-    assert.ok(!rows.some(l => l.wa_number === '+919000000001'), 'spoofed post must not create a lead');
+    assert.ok(!rows.some(l => l.wa_number === '+919000000199'), 'spoofed post must not create a lead');
   });
 
   await test('reply mode holds automatic sends to numbers outside the test list', async () => {
@@ -179,6 +233,8 @@ try {
     const h = await api('/ops/health?probe=0');
     assert.equal(h.webhook.auth, 'signature');                // signature enforcement is active
     assert.ok(Array.isArray(h.issues));
+    assert.ok(h.sends.sent >= 1, 'delivered/read messages count as sent');
+    assert.match(h.sends.topError, /^#1310(26|49) /);
     const s2 = await api('/ops/spend');
     assert.ok(s2.spend.sendCap > 0);
     const b = await api('/ops/backups/run', { method: 'POST' });

@@ -2,7 +2,7 @@
 // Requires GOOGLE_SERVICE_ACCOUNT_B64 (base64 of the JSON key) and the sheet shared with the
 // service account's client_email as Editor.
 import crypto from 'node:crypto';
-import { activeSheetConfig } from './active.js';
+import { activeSheetConfig, configuredLeadTabs } from './active.js';
 import { normHeader } from '../../util/normalize.js';
 
 const API = 'https://sheets.googleapis.com/v4/spreadsheets';
@@ -44,7 +44,7 @@ const q = (tab) => `'${String(tab).replace(/'/g, "''")}'`;
 
 async function listTabs() { const meta = await api('GET', '', null, { fields: 'properties.title,sheets.properties.title' }); return { title: meta.properties?.title, tabs: (meta.sheets || []).map(s => s.properties.title) }; }
 async function findLeadsTab() {
-  const lt = activeSheetConfig().leadsTab; if (lt) return lt;
+  const lt = configuredLeadTabs()[0]; if (lt) return lt;
   const { tabs } = await listTabs();
   for (const t of tabs) {
     const r = await api('GET', `/values/${encodeURIComponent(q(t) + '!1:1')}`);
@@ -53,25 +53,31 @@ async function findLeadsTab() {
   }
   throw new Error('No tab with whatsapp_number + lead_status headers');
 }
+async function readTab(tab) {
+  const r = await api('GET', `/values/${encodeURIComponent(q(tab))}`, null, { valueRenderOption: 'FORMATTED_VALUE' });
+  const values = r.values || [];
+  const headers = values[0] || [];
+  const rows = [];
+  for (let i = 1; i < values.length; i++) {
+    const row = values[i] || [];
+    if (!row.some(v => v !== '' && v != null)) continue;
+    rows.push({ rowNumber: i + 1, values: headers.map((_, j) => row[j] ?? '') });
+  }
+  return { tab, headers, rows };
+}
 function colLetter(n) { let s = ''; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; }
 
 export function createServiceAccountProvider() {
   return {
     name: 'serviceaccount',
     ping: async () => { const t = await listTabs(); return { ok: true, name: t.title, tabs: t.tabs }; },
-    readLeads: async () => {
-      const tab = await findLeadsTab();
-      const r = await api('GET', `/values/${encodeURIComponent(q(tab))}`, null, { valueRenderOption: 'FORMATTED_VALUE' });
-      const values = r.values || [];
-      const headers = values[0] || [];
-      const rows = [];
-      for (let i = 1; i < values.length; i++) {
-        const row = values[i] || [];
-        if (!row.some(v => v !== '' && v != null)) continue;
-        const padded = headers.map((_, j) => row[j] ?? '');
-        rows.push({ rowNumber: i + 1, values: padded });
-      }
-      return { tab, headers, rows };
+    readLeads: async () => readTab(await findLeadsTab()),
+    readTables: async () => {
+      const configured = configuredLeadTabs();
+      const tabs = configured.length ? configured : (await listTabs()).tabs;
+      const out = [];
+      for (const tab of tabs) out.push(await readTab(tab));
+      return out;
     },
     updateRow: async (rowNumber, values, tab) => {
       tab = tab || await findLeadsTab();

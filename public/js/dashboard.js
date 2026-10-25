@@ -80,7 +80,9 @@ export function describe(a) {
     case 'message.human': return `${who} replied to ${lead}`;
     case 'message.template.human': return `${who} sent template ${d.name} to ${lead}`;
     case 'followup.sent': return `Journey day ${d.day ?? d.stage} (${d.template}) sent to ${lead}`;
-    case 'followup.failed': return `Follow-up to ${lead} failed: ${d.error}`;
+    case 'followup.failed': return `Follow-up to ${lead} ${d.undelivered ? 'was not delivered' : 'failed'}: ${d.error}`;
+    case 'followup.stopped': return `Journey stopped for ${lead}: ${d.error || d.reason}`;
+    case 'lead.paused': return `${lead} imported paused (sheet note: ${d.note})`;
     case 'ai.review': return `${who} marked an AI reply to ${lead} as ${d.review || 'unreviewed'}`;
     case 'ai.error': return `AI error for ${lead}: ${d.error}`;
     case 'sheet.import': return `Sheet import: +${d.created} new, ${d.updated} updated, ${d.invalid} invalid`;

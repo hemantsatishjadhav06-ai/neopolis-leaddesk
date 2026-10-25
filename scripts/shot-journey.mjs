@@ -7,5 +7,5 @@ await page.fill('input[name=email]', process.env.EMAIL || 'admin@neopolis.test')
 await page.waitForSelector('#journey .journey-step', { timeout: 10000 }); await page.waitForTimeout(500);
 await page.screenshot({ path: 'tests/screenshots/06-journey.png', fullPage: true });
 await page.click('[data-act=submit-templates]'); await page.waitForSelector('.modal [data-ok]'); await page.click('.modal [data-ok]'); await page.waitForTimeout(800);
-const txt = await page.textContent('.modal pre'); console.log('submit result contains d13:', txt.includes('neopolis_journey_d13_final'));
+const txt = await page.textContent('.modal pre'); console.log('submit result contains d13:', txt.includes('neopolis_v3_d13_last'));
 await browser.close(); console.log(errors.length ? 'ERRORS: ' + errors.join('\n') : 'UI OK');

@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { toWaId } from '../util/normalize.js';
 import { log } from '../logger.js';
+import { DEFAULT_JOURNEY } from '../settings.js';
 
 const wa = config.whatsapp;
 const BASE = () => `https://graph.facebook.com/${wa.graphVersion}`;
@@ -56,6 +57,33 @@ export async function sendTemplate(to, { name, language = 'en', bodyParams = [],
   if (bodyParams.length) template.components = [{ type: 'body', parameters: bodyParams.map(t => ({ type: 'text', text: String(t) })) }];
   const r = await graph('POST', `${pid}/messages`, { body: { messaging_product: 'whatsapp', recipient_type: 'individual', to: toWaId(to), type: 'template', template } });
   return { id: r.messages?.[0]?.id, raw: r };
+}
+
+// Meta accepts a send (returns a wamid) and reports delivery failures later, in a status webhook.
+// What the common asynchronous failure codes mean in practice
+// (https://developers.facebook.com/docs/whatsapp/cloud-api/support/error-codes).
+const DELIVERY_HINTS = {
+  131026: 'number cannot receive WhatsApp messages: not on WhatsApp, old app version, or terms not accepted',
+  131042: 'payment problem on the WhatsApp Business Account: check billing in Meta Business Manager',
+  131047: '24-hour window closed: only an approved template can be sent',
+  131048: 'spam rate limit on this sender number: check its quality rating in WhatsApp Manager',
+  131049: 'Meta held back this marketing template (per-user marketing limit): wait at least 24h before resending',
+  131050: 'the lead has stopped marketing messages from this business',
+  131056: 'too many messages to this lead in a short time',
+  130472: 'the lead is in a Meta marketing-message experiment',
+  132015: 'template paused for low quality',
+  132016: 'template permanently disabled for low quality',
+};
+// Failures a retry cannot fix: proactive outreach to that lead should stop.
+export const PERMANENT_DELIVERY_ERRORS = new Set([131021, 131026, 131050]);
+
+// One readable line from a status-webhook error, keeping Meta's code: "#131049 Message failed to send — … (hint)".
+export function describeDeliveryError(err) {
+  if (!err) return null;
+  const parts = [err.title, err.message, err.error_data?.details].map(s => String(s || '').trim()).filter(Boolean);
+  const text = [...new Set(parts)].join(' — ') || 'Delivery failed';
+  const hint = DELIVERY_HINTS[err.code];
+  return `${err.code ? `#${err.code} ` : ''}${text}${hint ? ` (${hint})` : ''}`;
 }
 
 export async function markRead(messageId, { phoneNumberId } = {}) {
@@ -129,7 +157,7 @@ export async function subscribedApps(wabaId = wa.wabaId) {
   return graph('GET', `${wabaId}/subscribed_apps`, {});
 }
 export async function listTemplates(wabaId = wa.wabaId) {
-  if (wa.mock) return { data: [{ name: 'neopolis_intro_day0', status: 'APPROVED', language: 'en', category: 'MARKETING' }] };
+  if (wa.mock) return { data: DEFAULT_JOURNEY.map(s => ({ name: s.template, status: 'APPROVED', language: 'en', category: 'MARKETING' })) };
   return graph('GET', `${wabaId}/message_templates`, { query: { fields: 'name,status,language,category,components', limit: 100 } });
 }
 export async function createTemplate(wabaId = wa.wabaId, tpl) {
