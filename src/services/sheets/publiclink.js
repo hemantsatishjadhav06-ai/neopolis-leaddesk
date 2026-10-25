@@ -3,6 +3,8 @@
 // link: Viewer". Import only — status/replies are kept inside LeadDesk (use the Apps Script
 // connector if you also want them written back to the sheet).
 import { activeSheetConfig } from './active.js';
+import { readXlsx } from '../../util/xlsx.js';
+import { log } from '../../logger.js';
 
 // Tiny RFC-4180-ish CSV parser (handles quotes, escaped quotes, embedded commas + newlines).
 export function parseCsv(text) {
@@ -51,8 +53,22 @@ async function fetchCsv() {
   throw lastErr || new Error('Could not read the sheet from its link.');
 }
 
+// Every tab of the workbook in one request. The CSV export only gives one tab, and only the one whose gid
+// happened to be in the pasted link, which is how an import ended up reading a "visits list" tab.
+async function fetchWorkbook() {
+  const c = activeSheetConfig();
+  if (!c.spreadsheetId) throw new Error('No spreadsheet linked yet.');
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 60000);
+  try {
+    const res = await fetch(`https://docs.google.com/spreadsheets/d/${c.spreadsheetId}/export?format=xlsx`, { redirect: 'follow', signal: ctrl.signal });
+    if (!res.ok) throw new Error(`Google returned HTTP ${res.status}`);
+    return readXlsx(Buffer.from(await res.arrayBuffer())); // a sign-in page (sheet not shared by link) fails to parse here
+  } finally { clearTimeout(timer); }
+}
+
 export function createPublicLinkProvider() {
-  return {
+  const provider = {
     name: 'publiclink',
     readOnly: true,
     ping: async () => {
@@ -72,8 +88,22 @@ export function createPublicLinkProvider() {
       }
       return { tab: c.leadsTab || 'sheet', headers, rows };
     },
+    readTables: async () => {
+      try {
+        return (await fetchWorkbook()).map(s => {
+          const headers = s.rows.find(r => r.rowNumber === 1)?.values || [];
+          const rows = s.rows.filter(r => r.rowNumber > 1 && r.values.some(x => String(x).trim() !== ''))
+            .map(r => ({ rowNumber: r.rowNumber, values: headers.map((_, j) => r.values[j] ?? '') }));
+          return { tab: s.name, headers, rows };
+        });
+      } catch (e) {
+        log.warn(`Whole-workbook read failed (${e.message}); reading a single tab instead`);
+        return [await provider.readLeads()];
+      }
+    },
     // Read-only: writes are silently no-ops (mirroring is disabled for this provider anyway).
     updateRow: async () => ({ ok: true, skipped: 'read-only link connection' }),
     appendReply: async () => ({ ok: true, skipped: 'read-only link connection' }),
   };
+  return provider;
 }

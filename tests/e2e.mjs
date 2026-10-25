@@ -139,20 +139,20 @@ try {
   // Meta returns a wamid for every accepted send and only later posts status=failed. That async failure
   // must not leave the lead marked CONTACTED with its journey advanced.
   const failStatus = (id, code, title, details) => waPost({ object: 'whatsapp_business_account', entry: [{ changes: [{ value: { statuses: [{ id, status: 'failed', timestamp: '2', errors: [{ code, title, message: title, error_data: { details } }] }] } }] }] });
-  await test('undelivered journey template: Meta reason recorded, step rolled back, retried no sooner than 24h', async () => {
+  await test('undelivered journey template: Meta reason recorded, lead put back on that step, not re-sent straight away', async () => {
     const tpl = (await api('/leads/1')).messages.find(m => m.type === 'template');
     await failStatus(tpl.wa_message_id, 131049, 'This message was not delivered to maintain healthy ecosystem engagement.', 'Message failed to send because there are restrictions on how many messages can be sent.');
     const d = await waitFor(async () => { const d = await api('/leads/1'); return d.lead.followup_stage === 0 ? d : null; });
     const m = d.messages.find(x => x.id === tpl.id);
     assert.equal(m.status, 'failed'); assert.match(m.error, /^#131049 This message was not delivered/); assert.match(m.error, /wait at least 24h/);
-    assert.equal(d.lead.status, 'CREATED'); assert.equal(d.lead.followup_attempts, 1); assert.equal(d.lead.first_contact_at, null);
-    assert.equal(d.lead.outreach_paused, false); assert.match(d.lead.last_error, /#131049/);
-    assert.ok(Date.parse(d.lead.followup_retry_at) > Date.now() + 23 * 36e5);
+    assert.equal(d.lead.status, 'CREATED'); assert.equal(d.lead.outreach_paused, false); assert.match(d.lead.last_error, /#131049/);
     assert.ok(d.history.some(h => h.type === 'followup.failed' && h.data.undelivered));
-    assert.equal((await api('/followups/run', { method: 'POST' })).result.sent, 0); // not re-sent straight away
+    const r = await api('/followups/run', { method: 'POST' });
+    assert.equal(r.result.sent, 0); assert.ok(r.result.waitingToResend >= 1); // re-sent only after the retry gap
     await failStatus(tpl.wa_message_id, 131049, 'duplicate webhook delivery', '');
     await sleep(200);
-    assert.equal((await api('/leads/1')).lead.followup_attempts, 1); // a repeated status does not roll back twice
+    const again = (await api('/leads/1')).lead;
+    assert.equal(again.followup_stage, 0); assert.equal(again.outreach_paused, false); // a repeated status changes nothing
   });
   await test('undeliverable number (131026) stops outreach instead of retrying', async () => {
     await api('/settings', { method: 'PUT', body: { test_recipients: '+919000000002,+919000000044' } });
@@ -187,6 +187,7 @@ try {
     await api('/settings', { method: 'PUT', body: { journey_daily_cap: last.dailyUsed } });
     const r = await api('/followups/run', { method: 'POST' }); // "Run now" skips the gap but not the daily cap
     assert.equal(r.result.sent, 0); assert.equal(r.result.due, 1);
+    assert.ok(r.result.waitingForDelivery >= 1); // the lead just sent Day 0 waits for WhatsApp's receipt before anything else
     await api('/settings', { method: 'PUT', body: { journey_daily_cap: 40, journey_per_run: 2, journey_run_minutes: 20, test_recipients: '+919000000002' } });
   });
   await test('sheet mirror queue writes lead_status + last_reply and Client Replies rows', async () => {

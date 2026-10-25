@@ -24,11 +24,20 @@ The connector is a tiny **Apps Script** that runs inside your own spreadsheet wi
 
 If you ever edit the script: **Deploy → Manage deployments → ✎ → Version: New version → Deploy** (the URL stays the same).
 
+## Which tabs are imported
+
+Every tab that looks like a lead-form export is imported: a `whatsapp_number` or `phone_number` column, a `full_name` column, and `created_time` or `lead_status`. So a new ad form landing in its own tab (like *Sheet6*) is picked up automatically. Notes tabs (*visits list*, with NAME / NUMBER), the **Client Replies** log and stray sheets are skipped. To import only specific tabs, list them under **Settings → Google Sheet → Leads tab name**, e.g. `02-08-2026, Sheet6`.
+
+* A number that appears in several rows or tabs is imported once (the first row wins).
+* A new lead whose row already carries a "not interested" / "DND" note from the sales team is imported **paused**, so the journey never messages them. Resume them from **Leads** if that note was wrong.
+* With the read-only **sheet link** connection, LeadDesk downloads the whole workbook (one request), so the tab that happened to be open when the link was copied no longer matters.
+
 ## What it does exactly
 
 | Operation | Effect on the sheet |
 |---|---|
-| `readLeads` | Reads the tab whose header row has `whatsapp_number` + `lead_status` (your Meta Lead Ads tab). Read-only. |
+| `ping` | Lists the tabs; LeadDesk then reads each one (`readLeads`) and keeps the leads tabs (see above). Read-only. |
+| `readLeads` | Reads one tab. Read-only. |
 | `updateRow` | Writes `lead_status` on that row; writes `last_reply` — the column is created once at the far right if it doesn't exist. |
 | `appendReply` | Appends one row to **Client Replies** (created on first use): timestamp, whatsapp_number, full_name, message, ai_reply, link to the lead's row, link to the chat in LeadDesk. |
 

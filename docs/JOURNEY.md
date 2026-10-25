@@ -86,6 +86,19 @@ Leads keep their place in the journey: someone who already received Day 0 gets t
 
 On a build older than the template-approval check, set **Send mode** to **Off** while the templates are in review. Without it, every send fails until Meta approves and uses up each due lead's send attempts.
 
+## Delivery comes first
+
+A step counts only once WhatsApp confirms it reached the phone (**delivered** or **read**). Meta accepting a send is not enough: it often accepts a marketing template and then reports `#131049` ("not delivered to maintain healthy ecosystem engagement": its cap on marketing messages per person).
+
+* **Waiting for delivery:** while a step has been sent but has no receipt yet, the lead gets nothing else. Day 2 never arrives before Day 0.
+* **Not delivered:** the same step is re-sent after 1 day, then 2, 4 and 7 days (Meta asks for at least 24 hours after `#131049`). The next step's countdown starts only when this one is delivered.
+* **Never deliverable:** `#131026` (not on WhatsApp), `#131050` (stopped marketing messages from you), or 5 undelivered tries, and outreach to that lead stops. The reason is on the lead and in the activity feed.
+* **No receipt for 7 days** counts as not delivered.
+* Leads whose Day 0 never arrived under the earlier behaviour get Day 0 first, even if a later step did arrive.
+* The lead's status follows what was **delivered**: `CONTACTED` means Day 0 arrived, `FOLLOWUP_n` means step n arrived.
+
+Settings → Outreach shows how many leads are waiting for a receipt and how many are queued for a re-send.
+
 ## Pacing
 
 The automatic run sends at most **2 journey messages per run**, runs **20 minutes** apart, with at most **40 per day** (from midnight IST). Change these in Settings → Outreach; 0 means no limit. **Run now** skips the 20-minute spacing but not the daily cap.

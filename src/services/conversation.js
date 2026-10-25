@@ -3,7 +3,8 @@
 import { get } from '../db.js';
 import { config } from '../config.js';
 import { assertCanSend, noteSent, SendBlocked } from './guard.js';
-import { getSetting, listFromCsv, journeyStep, getJourney, journeyStatus } from '../settings.js';
+import { getSetting, listFromCsv, journeyStep, getJourney } from '../settings.js';
+import { reconcileJourney, stepOf } from './journey.js';
 import { normalizePhone, firstName } from '../util/normalize.js';
 import { stampIst } from '../util/time.js';
 import * as wa from './whatsapp.js';
@@ -74,34 +75,13 @@ function handleStatus(s) {
   const msg = updateMessageStatus(s.id, s.status, { error });
   if (!msg || s.status !== 'failed') return;
   log.warn(`Delivery failed for lead ${msg.lead_id} (${msg.template_name ? `template ${msg.template_name}` : msg.type}): ${error || 'no reason given'}`);
-  if (msg.sender === 'system' && msg.type === 'template' && config.brain !== 'n8n') journeyDeliveryFailed(msg, err?.code);
-}
-
-// Meta asks for at least 24h before resending a template it held back (131049).
-const JOURNEY_RETRY_HOURS = 24;
-
-// An undelivered journey template must not count as a completed step, or the lead shows as CONTACTED /
-// FOLLOWUP_n and the next step goes out days later to someone who never got this one. Roll the step back
-// so the scheduler retries it later, or stop outreach when a retry cannot succeed.
-function journeyDeliveryFailed(msg, code) {
-  const lead = getLead(msg.lead_id);
-  if (!lead || lead.last_inbound_at) return; // they replied — the journey is over anyway
-  const stage = getJourney().findIndex(s => s.template === msg.template_name);
-  if (stage < 0 || (lead.followup_stage || 0) !== stage + 1) return; // not the latest step any more
-  const paused = wa.PERMANENT_DELIVERY_ERRORS.has(Number(code));
-  const attempts = (lead.followup_attempts || 0) + 1;
-  const patch = {
-    followup_stage: stage,
-    status: stage === 0 ? 'CREATED' : journeyStatus(stage - 1),
-    followup_attempts: attempts,
-    followup_retry_at: new Date(Date.now() + JOURNEY_RETRY_HOURS * 36e5).toISOString(),
-    last_error: msg.error || 'Message failed',
-  };
-  if (stage === 0) patch.first_contact_at = null;
-  if (paused) patch.outreach_paused = 1;
-  const updated = updateLead(lead.id, patch);
-  audit('followup.failed', { leadId: lead.id, data: { template: msg.template_name, stage, error: patch.last_error, attempts, undelivered: true, paused } });
-  mirrorLead(updated);
+  if (msg.type !== 'template' || config.brain === 'n8n') return;
+  // A journey step that did not arrive is not done: put the lead back on it now (the scheduler re-sends it after
+  // a retry gap, and never moves on to the next step until this one is delivered).
+  const journey = getJourney();
+  if (stepOf(msg, journey) < 0) return;
+  const lead = reconcileJourney(getLead(msg.lead_id), journey);
+  audit('followup.failed', { leadId: msg.lead_id, data: { template: msg.template_name, error: error || 'Message failed', undelivered: true, paused: !!lead?.outreach_paused } });
 }
 
 export async function handleInbound({ message, profileName = '', phoneNumberId = '' }) {
@@ -223,7 +203,7 @@ export async function sendOut(lead, { text, sender = 'human', userId = null, inR
   }
 }
 
-export async function sendTemplateOut(lead, { name, language, bodyParams = [], sender = 'system', userId = null, bodyText = '' }) {
+export async function sendTemplateOut(lead, { name, language, bodyParams = [], sender = 'system', userId = null, bodyText = '', meta = {} }) {
   const kind = sender === 'human' ? 'human' : 'journey';
   try {
     assertCanSend(lead, kind);
@@ -237,9 +217,9 @@ export async function sendTemplateOut(lead, { name, language, bodyParams = [], s
   try {
     const r = await wa.sendTemplate(lead.wa_number, { name, language: language || getSetting('template_language'), bodyParams });
     noteSent(kind);
-    return addMessage(lead.id, { direction: 'out', sender, sender_user_id: userId, type: 'template', template_name: name, body: bodyText, wa_message_id: r.id || null, status: 'sent', meta: { bodyParams } });
+    return addMessage(lead.id, { direction: 'out', sender, sender_user_id: userId, type: 'template', template_name: name, body: bodyText, wa_message_id: r.id || null, status: 'sent', meta: { ...meta, bodyParams } });
   } catch (e) {
-    addMessage(lead.id, { direction: 'out', sender, sender_user_id: userId, type: 'template', template_name: name, body: bodyText, status: 'failed', error: e.message, meta: { bodyParams } });
+    addMessage(lead.id, { direction: 'out', sender, sender_user_id: userId, type: 'template', template_name: name, body: bodyText, status: 'failed', error: e.message, meta: { ...meta, bodyParams } });
     updateLead(lead.id, { last_error: e.message }, { silent: true });
     throw e;
   }

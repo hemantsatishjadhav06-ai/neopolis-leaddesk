@@ -10,6 +10,7 @@ import { activeSheetConfig } from './sheets/active.js';
 import { cleanupSessions } from './auth.js';
 import { isTestRecipient, SendBlocked } from './guard.js';
 import { maybeBackup } from './backup.js';
+import { journeyState, reconcileJourney } from './journey.js';
 import { runMonitor } from './monitor.js';
 import * as wa from './whatsapp.js';
 import { log } from '../logger.js';
@@ -22,22 +23,26 @@ function allowedBySendMode(lead) {
   return false;
 }
 
+const journeyLeads = () => all(`SELECT * FROM leads WHERE mode = 'ai' AND outreach_paused = 0 AND opted_out = 0 AND last_inbound_at IS NULL AND status IN ('CREATED','CONTACTED','FOLLOWUP_1','FOLLOWUP_2','FOLLOWUP_3','FOLLOWUP_4','FOLLOWUP_5') AND followup_attempts < ?`, Number(getSetting('max_followup_attempts')) || 3);
+
 // Which leads are due right now (used both by the loop and by the "preview" button in Settings).
-// followup_stage = number of journey steps already sent; step N is due once day(N) x 24h have passed since the Day-0 send.
+// The next step is the first one WhatsApp has not confirmed as delivered (see journey.js); it is due once the
+// previous step has been delivered for day(N) - day(N-1) days, or, when it failed, once its retry gap is up.
+// Leads with no journey messages on record fall back to followup_stage + days since the Day-0 send.
 export function dueFollowups({ ignoreWindow = false } = {}) {
   const journey = getJourney();
-  const rows = all(`SELECT * FROM leads WHERE mode = 'ai' AND outreach_paused = 0 AND opted_out = 0 AND last_inbound_at IS NULL AND status IN ('CREATED','CONTACTED','FOLLOWUP_1','FOLLOWUP_2','FOLLOWUP_3','FOLLOWUP_4','FOLLOWUP_5') AND followup_attempts < ?`, Number(getSetting('max_followup_attempts')) || 3);
+  const now = Date.now();
   const due = [];
-  for (const l of rows) {
-    const stage = l.followup_stage || 0;
-    if (stage >= journey.length) continue;
-    if (l.followup_retry_at && Date.parse(l.followup_retry_at) > Date.now()) continue; // undelivered step, waiting to retry
-    const step = journey[stage];
-    const ready = stage === 0 || hoursSince(l.first_contact_at) >= step.day * 24;
-    if (!ready) continue;
-    due.push({ lead: l, step, stage, allowed: allowedBySendMode(l) });
+  const held = { delivery: 0, retry: 0 };
+  for (const l of journeyLeads()) {
+    const st = journeyState(l, journey, now);
+    if (st.stop || st.next >= journey.length) continue;
+    const step = journey[st.next];
+    const ready = st.legacy ? (st.next === 0 || hoursSince(l.first_contact_at) >= step.day * 24) : st.readyAt <= now;
+    if (!ready) { if (st.waiting === 'delivery') held.delivery++; else if (st.waiting === 'retry') held.retry++; continue; }
+    due.push({ lead: l, step, stage: st.next, retry: st.attempts > 0, allowed: allowedBySendMode(l) });
   }
-  return { due, inWindow: ignoreWindow || inSendWindow(getSetting('send_window_start'), getSetting('send_window_end')), sendMode: getSetting('send_mode'), journeyLength: journey.length };
+  return { due, held, inWindow: ignoreWindow || inSendWindow(getSetting('send_window_start'), getSetting('send_window_end')), sendMode: getSetting('send_mode'), journeyLength: journey.length };
 }
 
 // Meta status of each template by name, refreshed every 10 minutes. A journey step only goes out once its
@@ -71,11 +76,19 @@ function journeySentToday() {
 }
 
 // paced = the background loop: a few sends per run, runs spaced out. "Run now" skips the spacing; the daily cap
-// applies to both.
-export async function runFollowups({ maxPerRun = 40, paced = false } = {}) {
+// applies to both. One run at a time, so a "Run now" during the background run cannot send a step twice.
+let followupsRunning = false;
+export async function runFollowups(opts = {}) {
+  if (followupsRunning) return { skipped: 'already running' };
+  followupsRunning = true;
+  try { return await runFollowupsOnce(opts); } finally { followupsRunning = false; }
+}
+
+async function runFollowupsOnce({ maxPerRun = 40, paced = false } = {}) {
   if (config.brain === 'n8n') return { skipped: 'journey runs in n8n' };
   if (!wa.isConfigured()) return { skipped: 'whatsapp not configured' };
-  const { due, inWindow, sendMode, journeyLength } = dueFollowups();
+  for (const l of journeyLeads()) reconcileJourney(l); // receipts → stored stage/status, and stop leads that can't be reached
+  const { due, held, inWindow, sendMode, journeyLength } = dueFollowups();
   if (sendMode === 'off') return { skipped: 'send_mode off', due: due.length };
   if (!inWindow) return { skipped: 'outside send window', due: due.length };
   const dailyCap = Number(getSetting('journey_daily_cap')) || Infinity;
@@ -90,18 +103,20 @@ export async function runFollowups({ maxPerRun = 40, paced = false } = {}) {
   let sent = 0, failed = 0, skipped = 0;
   const tpl = limit && due.some(d => d.allowed) ? await templateStatuses() : { status: null };
   const awaitingApproval = new Set();
-  for (const { lead, step, stage, allowed } of due) {
+  for (const { lead, step, stage, retry, allowed } of due) {
     if (sent + failed >= limit) break;
     if (!allowed) { skipped++; continue; }
     if (!templateApproved(tpl, step.template)) { skipped++; awaitingApproval.add(step.template); continue; }
     const fresh = getLead(lead.id);
-    if (!fresh || fresh.last_inbound_at || fresh.mode !== 'ai' || fresh.outreach_paused || (fresh.followup_stage || 0) !== stage) { skipped++; continue; }
+    if (!fresh || fresh.last_inbound_at || fresh.mode !== 'ai' || fresh.outreach_paused) { skipped++; continue; }
+    const cur = journeyState(fresh);
+    if (cur.stop || cur.next !== stage || (!cur.legacy && cur.readyAt > Date.now())) { skipped++; continue; }
     const params = getSetting('templates_use_name_param') ? [fresh.first_name || 'there'] : [];
     try {
-      await sendTemplateOut(fresh, { name: step.template, bodyParams: params, sender: 'system', bodyText: renderTemplateText(step.key, fresh) });
+      await sendTemplateOut(fresh, { name: step.template, bodyParams: params, sender: 'system', bodyText: renderTemplateText(step.key, fresh), meta: { journey_day: step.day } });
       const ts = nowIso();
-      const updated = updateLead(fresh.id, { status: journeyStatus(stage), followup_stage: stage + 1, first_contact_at: fresh.first_contact_at || ts, last_followup_at: ts, followup_attempts: 0, followup_retry_at: null, last_error: null });
-      audit('followup.sent', { leadId: fresh.id, data: { template: step.template, stage, day: step.day } });
+      const updated = updateLead(fresh.id, { status: journeyStatus(stage), followup_stage: stage + 1, first_contact_at: fresh.first_contact_at || ts, last_followup_at: ts, followup_attempts: 0, last_error: null });
+      audit('followup.sent', { leadId: fresh.id, data: { template: step.template, stage, day: step.day, ...(retry ? { resend: true } : {}) } });
       mirrorLead(updated);
       sent++;
     } catch (e) {
@@ -128,7 +143,7 @@ export async function runFollowups({ maxPerRun = 40, paced = false } = {}) {
     }
   }
   if (paced && (sent || failed)) kvSet('followups.lastSendAt', nowIso());
-  const result = { sent, failed, skipped, due: due.length, dailyUsed: dailyUsed + sent, dailyCap: Number.isFinite(dailyCap) ? dailyCap : null, ...(waiting ? { paced: true } : {}), awaitingApproval: [...awaitingApproval], at: nowIso() };
+  const result = { sent, failed, skipped, due: due.length, waitingForDelivery: held.delivery, waitingToResend: held.retry, dailyUsed: dailyUsed + sent, dailyCap: Number.isFinite(dailyCap) ? dailyCap : null, ...(waiting ? { paced: true } : {}), awaitingApproval: [...awaitingApproval], at: nowIso() };
   kvSet('followups.lastRun', result);
   return result;
 }
@@ -161,9 +176,9 @@ export const runTickNow = tick;
 export function followupStatus() {
   const d = dueFollowups();
   return {
-    lastRun: kvGet('followups.lastRun'), due: d.due.length, inWindow: d.inWindow, sendMode: d.sendMode, replyMode: getSetting('reply_mode'),
+    lastRun: kvGet('followups.lastRun'), due: d.due.length, held: d.held, inWindow: d.inWindow, sendMode: d.sendMode, replyMode: getSetting('reply_mode'),
     whatsappConfigured: wa.isConfigured(),
     journey: getJourney().map(s => ({ key: s.key, day: s.day, template: s.template })),
-    dueList: d.due.slice(0, 50).map(x => ({ id: x.lead.id, name: x.lead.full_name, wa_number: x.lead.wa_number, stage: x.stage, day: x.step.day, template: x.step.template, allowed: x.allowed })),
+    dueList: d.due.slice(0, 50).map(x => ({ id: x.lead.id, name: x.lead.full_name, wa_number: x.lead.wa_number, stage: x.stage, day: x.step.day, template: x.step.template, resend: x.retry, allowed: x.allowed })),
   };
 }
