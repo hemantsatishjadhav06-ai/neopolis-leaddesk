@@ -94,7 +94,7 @@ A step counts only once WhatsApp confirms it reached the phone (**delivered** or
 * **Not delivered:** the same step is re-sent after 1 day, then 2, 4 and 7 days (Meta asks for at least 24 hours after `#131049`). The next step's countdown starts only when this one is delivered.
 * **Never deliverable:** `#131026` (not on WhatsApp), `#131050` (stopped marketing messages from you), or 5 undelivered tries, and outreach to that lead stops. The reason is on the lead and in the activity feed.
 * **No receipt for 7 days** counts as not delivered.
-* Leads whose Day 0 never arrived under the earlier behaviour get Day 0 first, even if a later step did arrive.
+* The journey continues from the **last step that was delivered**. If nothing has arrived yet, it starts again at Day 0. Steps a lead missed before a later one arrived (under the earlier behaviour) are not back-filled.
 * The lead's status follows what was **delivered**: `CONTACTED` means Day 0 arrived, `FOLLOWUP_n` means step n arrived.
 
 Settings → Outreach shows how many leads are waiting for a receipt and how many are queued for a re-send.

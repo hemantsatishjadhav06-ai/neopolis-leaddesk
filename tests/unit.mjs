@@ -50,13 +50,17 @@ await test('second failure doubles the wait (48h)', async () => {
   const s = state([msg(0, 'failed', 100, { error: '#131049 x' }), msg(0, 'failed', 30, { error: '#131049 x' })]);
   assert.equal(s.attempts, 2); assert.equal(s.waiting, 'retry'); assert.equal(s.readyAt, NOW - 30 * H + 48 * H);
 });
-await test('Day 0 failed but Day 2 was delivered (old behaviour) → Day 0 is sent first', async () => {
-  const s = state([msg(0, 'failed', 120, { error: '#131049 x' }), msg(2, 'delivered', 70)], 2);
-  assert.equal(s.next, 0); assert.ok(s.readyAt <= NOW);
+await test('a step missed under the old behaviour is not back-filled: continue after the last delivered step', async () => {
+  const s = state([msg(0, 'delivered', 200), msg(2, 'failed', 150, { error: '#131049 x' }), msg(4, 'delivered', 100)], 3);
+  assert.equal(s.next, 3); assert.equal(s.attempts, 0); assert.ok(s.readyAt <= NOW); // Day 7, 3 days after Day 4 arrived
 });
-await test('…and once that Day 0 lands, Day 4 waits at least a day after it', async () => {
-  const s = state([msg(0, 'failed', 120, { error: '#131049 x' }), msg(2, 'delivered', 70), msg(0, 'delivered', 1)], 2);
-  assert.equal(s.next, 2); assert.equal(s.waiting, 'gap'); assert.equal(s.readyAt, NOW - 1 * H + DELIVERY.minGapHours * H);
+await test('nothing delivered yet → Day 0 again, however far the old code got', async () => {
+  const s = state([msg(0, 'failed', 120, { error: '#131049 x' }), msg(2, 'failed', 70, { error: '#131049 x' })], 2);
+  assert.equal(s.next, 0); assert.equal(s.attempts, 1); assert.ok(s.readyAt <= NOW);
+});
+await test('a re-sent step that lands restarts the spacing for the next one', async () => {
+  const s = state([msg(0, 'failed', 120, { error: '#131049 x' }), msg(0, 'delivered', 1)]);
+  assert.equal(s.next, 1); assert.equal(s.waiting, 'gap'); assert.equal(s.readyAt, NOW - 1 * H + 48 * H);
 });
 await test('no receipt for over a week → treated as not delivered and re-sent', async () => {
   const s = state([msg(0, 'sent', 8 * 24)]); assert.equal(s.next, 0); assert.equal(s.attempts, 1); assert.ok(s.readyAt <= NOW); assert.match(s.lastError, /No delivery receipt/);

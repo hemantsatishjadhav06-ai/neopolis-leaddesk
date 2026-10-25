@@ -3,6 +3,8 @@
 // until then the next step waits, so nobody gets Day 2 without having seen Day 0. A step that was not
 // delivered is re-sent with growing gaps (Meta asks for 24h+ after #131049) until it lands, or until it
 // clearly never will (a permanent error, or too many tries), and then outreach to that lead stops.
+// The journey continues from the last step that was delivered: steps missed before it (under the old
+// behaviour) are not back-filled, which would only send old messages out of order.
 import { all, parseJson } from '../db.js';
 import { getJourney, journeyStatus } from '../settings.js';
 import { PERMANENT_DELIVERY_ERRORS } from './whatsapp.js';
@@ -49,9 +51,11 @@ export function computeJourneyState({ msgs, journey, stage = 0, now = Date.now()
   }
   if (!any) return { next: stage, readyAt: 0, waiting: null, attempts: 0, stop: null, lastError: null, legacy: true };
 
-  const next = steps.findIndex(s => !s.delivered);
-  const base = { next: next < 0 ? journey.length : next, readyAt: 0, waiting: null, attempts: 0, stop: null, lastError: null, legacy: false };
-  if (next < 0) return base;
+  let lastDelivered = -1;
+  steps.forEach((s, i) => { if (s.delivered) lastDelivered = i; });
+  const next = lastDelivered + 1;
+  const base = { next, readyAt: 0, waiting: null, attempts: 0, stop: null, lastError: null, legacy: false };
+  if (next >= journey.length) return base;
 
   const tries = steps[next].tries;
   const pending = tries.filter(m => m.status !== 'failed' && now - ts(m.created_at) < opts.pendingHours * H);
@@ -65,7 +69,7 @@ export function computeJourneyState({ msgs, journey, stage = 0, now = Date.now()
   let readyAt = 0, waiting = null;
   const later = (t, why) => { if (t > readyAt) { readyAt = t; waiting = why; } };
   if (last) later(ts(last.created_at) + Math.min(opts.retryHours * 2 ** (failed.length - 1), opts.maxRetryHours) * H, 'retry');
-  // Space the steps from when the lead actually received the previous one (every step before `next` was delivered).
+  // Space the steps from when the lead actually received the previous one.
   if (next > 0) later(ts(steps[next - 1].delivered.created_at) + (journey[next].day - journey[next - 1].day) * 24 * H, 'gap');
   if (lastSentAt) later(lastSentAt + opts.minGapHours * H, 'gap');
   return { ...out, readyAt, waiting: readyAt > now ? waiting : null };
