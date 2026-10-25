@@ -160,5 +160,12 @@ await test('import through a shared link reads every leads tab; a link\'s #gid n
   const again = await importFromSheet({ force: true });
   assert.equal(again.created, 0); assert.equal(again.updated, 0); // the same row wins every time
 });
+await test('a configured tab list is respected, and leads tabs it leaves out are reported', async () => {
+  setSheetConnection({ provider: 'publiclink', spreadsheetId: 'TEST', gid: '', leadsTab: '02-08-2026', repliesTab: 'Client Replies' });
+  resetSheetProvider();
+  const r = await importFromSheet({ force: true });
+  assert.equal(r.tab, '02-08-2026');
+  assert.deepEqual(r.missedTabs, [{ tab: 'Sheet6', rows: 2 }]);
+});
 
 console.log(`\n${passed} unit tests passed${process.exitCode ? ' (with failures)' : ''}`);

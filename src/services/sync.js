@@ -82,7 +82,11 @@ export async function importFromSheet({ userId = null, force = false } = {}) {
   if (!force && !getSetting('sheet_import_enabled')) return { skipped: true, reason: 'Import disabled in settings' };
   const started = Date.now();
   const tables = provider.readTables ? await provider.readTables() : [await provider.readLeads()];
-  const picked = pickLeadTables(tables, { configured: configuredLeadTabs(), repliesTab: activeSheetConfig().repliesTab });
+  const configured = configuredLeadTabs();
+  const repliesTab = activeSheetConfig().repliesTab;
+  const picked = pickLeadTables(tables, { configured, repliesTab });
+  // Leads tabs the configured list leaves out (e.g. a newer ad form's tab): imported only once someone adds them.
+  const missedTabs = configured.length ? tables.filter(t => isLeadTable(t, repliesTab) && !configured.includes(String(t.tab))).map(t => ({ tab: t.tab, rows: t.rows.length })) : [];
   let created = 0, updated = 0, invalid = 0, seen = 0, duplicates = 0, paused = 0;
   const invalidRows = [];
   const tabs = [];
@@ -121,11 +125,12 @@ export async function importFromSheet({ userId = null, force = false } = {}) {
     tabs.push({ tab: data.tab, rows: tabRows, created: tabCreated });
   }
   const tabNames = tabs.map(t => t.tab).join(', ');
-  const result = { ok: true, tab: tabNames, tabs, rows: seen, created, updated, invalid, duplicates, paused, invalidRows, ms: Date.now() - started, at: nowIso() };
+  const result = { ok: true, tab: tabNames, tabs, missedTabs, rows: seen, created, updated, invalid, duplicates, paused, invalidRows, ms: Date.now() - started, at: nowIso() };
   kvSet('sheet.lastImport', result);
   audit('sheet.import', { userId, data: { created, updated, invalid, rows: seen, tabs: tabNames } });
   if (created || updated) broadcast('lead', { reason: 'import' });
   log.info(`Sheet import (${tabNames}): ${seen} rows, +${created} new${paused ? ` (${paused} paused: sheet says not interested)` : ''}, ${updated} updated, ${invalid} invalid${duplicates ? `, ${duplicates} duplicate` : ''}`);
+  if (missedTabs.length) log.warn(`Sheet import: leads tab(s) not imported because Settings → Google Sheet names only "${configured.join(', ')}": ${missedTabs.map(t => `${t.tab} (${t.rows} rows)`).join(', ')}. Clear the tab name to import every leads tab, or add them.`);
   return result;
 }
 
