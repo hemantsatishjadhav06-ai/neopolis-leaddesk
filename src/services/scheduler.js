@@ -42,6 +42,9 @@ export function dueFollowups({ ignoreWindow = false } = {}) {
     if (!ready) { if (st.waiting === 'delivery') held.delivery++; else if (st.waiting === 'retry') held.retry++; continue; }
     due.push({ lead: l, step, stage: st.next, retry: st.attempts > 0, allowed: allowedBySendMode(l) });
   }
+  // First sends before re-sends, newest leads first: with a daily cap, retries to cold leads must not crowd out
+  // a fresh lead's Day 0.
+  due.sort((a, b) => (a.retry - b.retry) || (b.lead.id - a.lead.id));
   return { due, held, inWindow: ignoreWindow || inSendWindow(getSetting('send_window_start'), getSetting('send_window_end')), sendMode: getSetting('send_mode'), journeyLength: journey.length };
 }
 

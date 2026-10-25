@@ -87,6 +87,23 @@ await test('every step delivered → journey done', async () => {
   const s = state(journey.map((st, i) => msg(st.day, 'delivered', 400 - i * 48))); assert.equal(s.next, journey.length);
 });
 
+await test('due order: first sends before re-sends, newest lead first', async () => {
+  const { dueFollowups } = await import('../src/services/scheduler.js');
+  const { createLead, addMessage } = await import('../src/services/leads.js');
+  const { run } = await import('../src/db.js');
+  const { getJourney } = await import('../src/settings.js');
+  const j = getJourney();
+  const old = createLead({ wa_number: '+919000000601', full_name: 'Old Retry' });
+  const m = addMessage(old.id, { direction: 'out', sender: 'system', type: 'template', template_name: j[0].template, wa_message_id: 'wamid.R1', status: 'failed', error: '#131049 x' });
+  run('UPDATE messages SET created_at = ? WHERE id = ?', new Date(Date.now() - 30 * H).toISOString(), m.id);
+  const older = createLead({ wa_number: '+919000000602', full_name: 'First Send A' });
+  const newest = createLead({ wa_number: '+919000000603', full_name: 'First Send B' });
+  try {
+    const ids = dueFollowups().due.map(d => d.lead.id).filter(id => [old.id, older.id, newest.id].includes(id));
+    assert.deepEqual(ids, [newest.id, older.id, old.id]);
+  } finally { run('DELETE FROM leads WHERE id IN (?, ?, ?)', old.id, older.id, newest.id); }
+});
+
 // ---------------- xlsx + multi-tab import ----------------
 // A tiny .xlsx writer, just enough to build test workbooks (stored as Google's export stores them).
 function buildXlsx(sheets) {
