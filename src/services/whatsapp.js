@@ -13,6 +13,12 @@ export class WhatsAppError extends Error {
   constructor(message, details) { super(message); this.details = details; }
 }
 
+// Setup errors Meta answers with a terse message, and what to do about them
+// (https://developers.facebook.com/docs/whatsapp/cloud-api/phone-numbers#registered-number-cap).
+const SETUP_HINTS = {
+  2388386: 'The Meta business portfolio already has as many registered numbers as it may (2 until the business is verified, then 20). Delete a number you no longer use in WhatsApp Manager → Phone numbers (not possible if it sent paid messages in the last 30 days), or complete business verification in Meta Business Suite → Security Centre to raise the cap to 20.',
+};
+
 async function graph(method, path, { body, token, query } = {}) {
   const url = new URL(`${BASE()}/${path.replace(/^\//, '')}`);
   if (query) for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
@@ -29,7 +35,8 @@ async function graph(method, path, { body, token, query } = {}) {
     let json; try { json = JSON.parse(text); } catch { json = { raw: text }; }
     if (!res.ok) {
       const err = json.error || {};
-      const msg = `${err.message || res.statusText}${err.error_user_msg ? ' — ' + err.error_user_msg : ''}${err.error_subcode ? ' (subcode ' + err.error_subcode + ')' : ''}`;
+      const hint = SETUP_HINTS[err.error_subcode];
+      const msg = `${err.message || res.statusText}${err.error_user_msg ? ' — ' + err.error_user_msg : ''}${err.error_subcode ? ' (subcode ' + err.error_subcode + ')' : ''}${hint ? ` ${hint}` : ''}`;
       throw new WhatsAppError(msg, { status: res.status, ...err });
     }
     return json;

@@ -145,6 +145,48 @@ async function generateReplyInner({ lead, history, inboundText }) {
   } finally { clearTimeout(timer); }
 }
 
+// Is the AI key usable? Asked of the provider directly (OpenRouter: GET /key and /credits; OpenAI-style: GET
+// /models), so a dead key shows up at boot and in the hourly monitor, not only when a lead's reply falls back.
+// The key itself is never returned: only a masked form (like OpenRouter's own label) and its shape.
+export const maskKey = (k) => (k ? `${k.slice(0, 12)}…${k.slice(-4)}` : '');
+async function getJson(url, key) {
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15000) });
+  const text = await res.text();
+  let json = {}; try { json = JSON.parse(text); } catch { /* not JSON */ }
+  return { res, json, text };
+}
+export async function aiKeyHealth() {
+  if (config.ai.mock || config.ai.provider === 'mock') return { ok: true, mock: true };
+  const key = config.ai.apiKey;
+  const openrouter = config.ai.provider === 'openrouter';
+  if (!key) return { ok: false, detail: `${openrouter ? 'OPENROUTER_API_KEY' : 'OPENAI_API_KEY'} is not set` };
+  const shape = { key: maskKey(key), length: key.length };
+  if (openrouter && !key.startsWith('sk-or-')) shape.warning = 'does not start with sk-or- (every OpenRouter key does) — is it a key from another service?';
+  if (config.ai.apiKeyCleaned) shape.cleaned = 'quotes, spaces or "Bearer " were removed from the variable';
+  const url = `${config.ai.baseUrl}/${openrouter ? 'key' : 'models'}`;
+  try {
+    const { res, json, text } = await getJson(url, key);
+    if (!res.ok) {
+      const detail = json.error?.message || text.slice(0, 200) || res.statusText;
+      const hint = res.status === 401 || res.status === 403
+        ? (openrouter ? 'This key belongs to no OpenRouter account (deleted, mistyped, or from another service). Create one at https://openrouter.ai/keys and set OPENROUTER_API_KEY in Railway.' : 'The provider rejected this key.')
+        : '';
+      return { ok: false, status: res.status, detail, ...(hint ? { hint } : {}), ...shape };
+    }
+    if (!openrouter) return { ok: true, ...shape };
+    const d = json.data || {};
+    const out = { ok: true, ...shape, label: d.label || null, keyLimit: d.limit ?? null, keyRemaining: d.limit_remaining ?? null, usage: d.usage ?? null, freeTier: !!d.is_free_tier };
+    // Account balance: a valid key on an account with no credit still fails every paid model with 402.
+    try {
+      const c = await getJson(`${config.ai.baseUrl}/credits`, key);
+      if (c.res.ok && c.json.data) out.balance = Math.round(((c.json.data.total_credits || 0) - (c.json.data.total_usage || 0)) * 100) / 100;
+    } catch { /* balance is optional */ }
+    if (out.keyRemaining !== null && out.keyRemaining <= 0) return { ...out, ok: false, detail: 'This key has used up its credit limit', hint: 'Raise the key\'s limit on https://openrouter.ai/keys or create a new key.' };
+    if (out.balance !== undefined && out.balance <= 0) return { ...out, ok: false, detail: 'The OpenRouter account has no credit left', hint: 'Add credit on https://openrouter.ai/credits (paid models such as openai/gpt-4o-mini need it).' };
+    return out;
+  } catch (e) { return { ok: null, detail: `could not reach ${url}: ${e.message}`, ...shape }; }
+}
+
 // Quick connectivity test used from Settings
 export async function testAi() {
   const r = await generateReply({ lead: { first_name: 'Test' }, history: [], inboundText: 'Hi, I am looking for a 3 BHK in Kokapet around 2 Cr' });

@@ -7,6 +7,10 @@ import path from 'node:path';
 const env = process.env;
 const bool = (v, d = false) => (v === undefined || v === '' ? d : ['1', 'true', 'yes', 'on'].includes(String(v).toLowerCase()));
 const num = (v, d) => (v === undefined || v === '' || Number.isNaN(Number(v)) ? d : Number(v));
+// A key pasted into a dashboard sometimes arrives wrapped in quotes, with "Bearer " in front or with spaces around
+// it; none of that is part of the key, and the provider answers such a key with 401.
+export const cleanKey = (v) => String(v || '').trim().replace(/^(['"`])([\s\S]*)\1$/, '$2').trim().replace(/^Bearer\s+/i, '').trim();
+const rawAiKey = env.OPENROUTER_API_KEY || env.OPENAI_API_KEY || '';
 
 const DATA_DIR = env.DATA_DIR || path.resolve(process.cwd(), 'data');
 try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch { /* ignore */ }
@@ -38,7 +42,8 @@ export const config = {
 
   ai: {
     provider: env.AI_PROVIDER || 'openrouter',          // openrouter | openai | mock
-    apiKey: env.OPENROUTER_API_KEY || env.OPENAI_API_KEY || '',
+    apiKey: cleanKey(rawAiKey),
+    apiKeyCleaned: cleanKey(rawAiKey) !== rawAiKey,     // the variable held quotes / spaces / "Bearer " (now ignored)
     baseUrl: env.AI_BASE_URL || (env.AI_PROVIDER === 'openai' ? 'https://api.openai.com/v1' : 'https://openrouter.ai/api/v1'),
     mock: bool(env.AI_MOCK, false),
   },

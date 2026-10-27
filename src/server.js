@@ -15,6 +15,9 @@ import { startScheduler } from './services/scheduler.js';
 import { clientCount } from './services/events.js';
 import { healthReport } from './services/monitor.js';
 import { runBackup } from './services/backup.js';
+import { aiKeyHealth } from './services/ai.js';
+import { listPhoneNumbers } from './services/whatsapp.js';
+import { kvSet } from './db.js';
 import { db } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -55,6 +58,7 @@ app.get('/health/ready', async (req, res) => {
       webhookAuth: r.webhook.auth,
       backupOk: !!r.backup?.last?.ok && !r.backup?.stale,
       whatsappOk: r.whatsapp?.ok !== false,
+      aiOk: r.ai?.ok !== false,
       issues: r.issues.map(i => ({ code: i.code, severity: i.severity })),
     });
   } catch (e) { res.status(500).json({ ok: false, error: 'health check failed' }); }
@@ -97,7 +101,24 @@ const server = app.listen(config.port, () => {
   startScheduler();
   // Always have a fresh copy from the moment this build goes live.
   runBackup({ reason: 'startup' }).catch(e => log.error('Startup backup failed', e));
+  startupChecks().catch(e => log.error('Startup checks failed', e));
 });
+
+// Say at boot whether the AI key works and which numbers each WhatsApp Business Account holds (Meta caps
+// registered numbers per business portfolio), so both are in the logs before anyone needs them.
+async function startupChecks() {
+  const ai = await aiKeyHealth();
+  kvSet('monitor.lastAi', { ...ai, at: new Date().toISOString() });
+  if (ai.ok === false) log.error('AI key check: NOT usable — every lead reply gets the fallback message', ai);
+  else log.info(`AI key check: ${ai.ok ? 'OK' : 'could not be checked'}`, ai);
+  if (config.whatsapp.mock || !config.whatsapp.token) return;
+  for (const waba of new Set(listFirms().map(f => f.waba_id || config.whatsapp.wabaId).filter(Boolean))) {
+    try {
+      const nums = (await listPhoneNumbers(waba)).data || [];
+      log.info(`WhatsApp numbers on WABA ${waba} (${nums.length})`, nums.map(n => ({ id: n.id, number: n.display_phone_number, name: n.verified_name, status: n.status, verification: n.code_verification_status, quality: n.quality_rating })));
+    } catch (e) { log.warn(`Could not list the numbers on WABA ${waba}: ${e.message}`); }
+  }
+}
 
 let shuttingDown = false;
 function shutdown(signal) {

@@ -9,7 +9,7 @@ import * as auth from '../services/auth.js';
 import * as leads from '../services/leads.js';
 import * as conv from '../services/conversation.js';
 import * as wa from '../services/whatsapp.js';
-import { testAi } from '../services/ai.js';
+import { testAi, aiKeyHealth } from '../services/ai.js';
 import { addClient } from '../services/events.js';
 import { importFromSheet, processSheetQueue, sheetStatus } from '../services/sync.js';
 import { getSheetProvider, resetSheetProvider } from '../services/sheets/index.js';
@@ -266,6 +266,7 @@ apiRouter.post('/sheet/test', requireRole('admin'), wrap(async (req, res) => {
 apiRouter.post('/sheet/import', requireRole('admin'), wrap(async (req, res) => { res.json({ result: await importFromSheet({ userId: req.user.id, force: true }) }); }));
 apiRouter.post('/sheet/flush', requireRole('admin'), wrap(async (req, res) => { res.json({ result: await processSheetQueue(100) }); }));
 apiRouter.post('/ai/test', requireRole('admin'), wrap(async (req, res) => { res.json({ result: await testAi() }); }));
+apiRouter.get('/ai/key', requireRole('admin'), wrap(async (req, res) => { res.json({ result: await aiKeyHealth() }); }));
 apiRouter.post('/followups/run', requireRole('admin'), wrap(async (req, res) => { res.json({ result: await runFollowups() }); }));
 apiRouter.post('/scheduler/tick', requireRole('admin'), wrap(async (req, res) => { await runTickNow(); res.json({ ok: true }); }));
 
@@ -323,7 +324,15 @@ apiRouter.post('/wa/add-number', requireRole('admin'), wrap(async (req, res) => 
   const firm = getFirm(currentFirmId());
   // 10-digit Indian number by default; the firm's own number and name when the form is left blank.
   const national = digitsOf(req.body.phone_number) || digitsOf(firm.display_number).replace(/^91(?=\d{10}$)/, '');
-  const result = await wa.addPhoneNumber({ cc: req.body.cc || '91', phoneNumber: national, verifiedName: req.body.verified_name || firm.name, wabaId: firmWabaId(firm) });
+  let result;
+  try { result = await wa.addPhoneNumber({ cc: req.body.cc || '91', phoneNumber: national, verifiedName: req.body.verified_name || firm.name, wabaId: firmWabaId(firm) }); }
+  catch (e) {
+    // Number cap reached: say which numbers hold the places, so the admin knows what could be deleted.
+    if (e.details?.error_subcode === 2388386) {
+      try { const nums = (await wa.listPhoneNumbers(firmWabaId(firm))).data || []; e.message += ` Numbers on this WhatsApp Business Account: ${nums.map(n => `${n.display_phone_number} (${n.verified_name || 'no name'}, ${n.status || n.code_verification_status || '?'})`).join('; ') || 'none'} — the cap counts every number in the business portfolio.`; } catch { /* keep Meta's message */ }
+    }
+    throw e;
+  }
   if (!firm.display_number && national) updateFirm(firm.id, { display_number: `+${req.body.cc || '91'}${national}` });
   const linked = linkNumber(getFirm(firm.id), result?.id);
   leads.audit('wa.number_added', { userId: req.user.id, firmId: firm.id, data: { number: national, id: result?.id, linked } });

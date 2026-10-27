@@ -8,6 +8,8 @@ import assert from 'node:assert/strict';
 
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'leaddesk-unit-'));
 process.env.WA_MOCK = '1';
+// Pasted the way it sometimes is into a dashboard: quoted, with "Bearer " in front (see config.cleanKey).
+process.env.OPENROUTER_API_KEY = ' "Bearer sk-or-v1-0123456789abcdef0123" ';
 const { computeJourneyState, stepOf, DELIVERY } = await import('../src/services/journey.js');
 const { readXlsx } = await import('../src/util/xlsx.js');
 const { pickLeadTables, importFromSheet } = await import('../src/services/sync.js');
@@ -231,6 +233,32 @@ await test("a new firm never inherits firm 1's send mode, test numbers or messag
   setSettings({ journey_steps: '[]' }, firm.id);
   assert.deepEqual(getJourney(firm.id), []); // an emptied journey stays empty — it does not fall back to firm 1's
   assert.ok(getJourney().length > 0);
+});
+
+// ---------------- AI key check ----------------
+const { aiKeyHealth } = await import('../src/services/ai.js');
+const { config } = await import('../src/config.js');
+await test('the AI key is cleaned of quotes and "Bearer ", and checked with the provider without exposing it', async () => {
+  assert.equal(config.ai.apiKey, 'sk-or-v1-0123456789abcdef0123'); assert.equal(config.ai.apiKeyCleaned, true);
+  const seen = [];
+  globalThis.fetch = async (url, opts) => { seen.push([String(url), opts.headers.Authorization]); return new Response(JSON.stringify({ error: { message: 'User not found.', code: 401 } }), { status: 401 }); };
+  const r = await aiKeyHealth();
+  assert.equal(r.ok, false); assert.equal(r.status, 401); assert.equal(r.detail, 'User not found.'); assert.match(r.hint, /openrouter\.ai\/keys/);
+  assert.equal(r.key, 'sk-or-v1-012…0123'); assert.ok(!JSON.stringify(r).includes('0123456789abcdef0123')); assert.ok(r.cleaned);
+  assert.deepEqual(seen, [['https://openrouter.ai/api/v1/key', 'Bearer sk-or-v1-0123456789abcdef0123']]);
+});
+await test('a working key reports its credit; an account with no credit is not usable', async () => {
+  let credits = 4.5;
+  globalThis.fetch = async (url) => String(url).endsWith('/key')
+    ? new Response(JSON.stringify({ data: { label: 'sk-or-v1-012...123', limit: null, limit_remaining: null, usage: 1.25, is_free_tier: false } }))
+    : new Response(JSON.stringify({ data: { total_credits: 5.75, total_usage: 5.75 - credits } }));
+  let r = await aiKeyHealth();
+  assert.equal(r.ok, true); assert.equal(r.balance, 4.5); assert.equal(r.usage, 1.25);
+  credits = 0;
+  r = await aiKeyHealth();
+  assert.equal(r.ok, false); assert.match(r.detail, /no credit/); assert.match(r.hint, /openrouter\.ai\/credits/);
+  globalThis.fetch = async () => { throw new Error('getaddrinfo ENOTFOUND'); };
+  assert.equal((await aiKeyHealth()).ok, null); // unreachable is "unknown", not "rejected"
 });
 
 console.log(`\n${passed} unit tests passed${process.exitCode ? ' (with failures)' : ''}`);

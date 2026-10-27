@@ -32,7 +32,7 @@ export async function renderSettings(el, route) {
     const p = $('#panel');
     const brainNote = view.config.brain === 'n8n' && firm()?.is_default !== false ? `<div class="notice info small mb16"><b>n8n is the brain.</b> AI replies and the 13-day journey run in your n8n workflows and are streamed into this inbox. Take-over / hand-back and status changes here are written to the sheet, which n8n obeys. The AI and outreach settings below only apply if you ever switch the brain to LeadDesk (BRAIN env var).</div>` : '';
     if (view.tab === 'ai') p.innerHTML = `${firmNote()}<form id="sform"><div class="card"><div class="card-h"><h2>AI concierge</h2><button class="btn sm" data-act="ai-test" type="button">Test the AI</button></div><div class="card-b">${brainNote}
-        <div class="notice ${view.config.ai.apiKeySet || view.config.ai.provider === 'mock' ? 'ok' : 'warn'} small mb16">${view.config.ai.provider === 'mock' ? 'Running in <b>mock</b> mode (no real AI calls).' : view.config.ai.apiKeySet ? `Connected to ${esc(view.config.ai.provider)}.` : 'No AI key configured — set <code class="inline">OPENROUTER_API_KEY</code> in the environment.'}</div>
+        <div id="ai-key" class="notice ${view.config.ai.apiKeySet || view.config.ai.provider === 'mock' ? 'info' : 'warn'} small mb16">${view.config.ai.provider === 'mock' ? 'Running in <b>mock</b> mode (no real AI calls).' : view.config.ai.apiKeySet ? `Checking the ${esc(view.config.ai.provider)} key…` : 'No AI key configured — set <code class="inline">OPENROUTER_API_KEY</code> in the environment.'}</div>
         <div class="form-grid">
           <div>${field('ai_enabled', 'AI replies enabled', { type: 'checkbox' })}${field('auto_handoff', 'Automatically hand over to sales when a lead qualifies or asks for a person', { type: 'checkbox' })}${field('mark_read', 'Show blue ticks (mark inbound messages as read)', { type: 'checkbox' })}</div>
           <div>${field('default_mode', 'New leads start in', { options: [['ai', 'AI mode — the AI replies instantly'], ['human', 'Human mode — team replies, AI stays silent']] })}</div>
@@ -44,7 +44,8 @@ export async function renderSettings(el, route) {
           ${field('ai_qualify_rule', 'A lead is qualified when…', { help: 'Completes "qualified: true if …". The AI flags the lead for sales when this is met.' })}
           <div class="full">${field('ai_system_prompt', 'Knowledge & instructions (system prompt)', { rows: 22, help: `Everything the AI knows about ${esc(S().company_name || 'the business')} and how it should behave. Edit freely — changes apply to the next message.` })}</div>
         </div>${saveBar()}</div></div></form>`;
-    else if (view.tab === 'outreach') {
+    if (view.tab === 'ai' && view.config.ai.apiKeySet && view.config.ai.provider !== 'mock' && !view.readOnly) showAiKey();
+    if (view.tab === 'outreach') {
       let fs = null, tplStatus = {}; try { fs = (await api('/system')).followups; } catch { /* ignore */ }
       try { const st = await api('/wa/status'); for (const t of (st.templates?.data || [])) tplStatus[t.name] = t.status; } catch { /* ignore */ }
       let journey = []; try { journey = JSON.parse(S().journey_steps); } catch { journey = []; }
@@ -81,6 +82,16 @@ export async function renderSettings(el, route) {
     else if (view.tab === 'account') p.innerHTML = `<div class="card"><div class="card-h"><h2>My account</h2></div><div class="card-b"><div class="kv mb16"><div class="k">Name</div><div>${esc(state.user.name)}</div><div class="k">Email</div><div>${esc(state.user.email)}</div><div class="k">Role</div><div style="text-transform:capitalize">${esc(state.user.role)}</div></div>
         <h3 class="mb8">Change password</h3><form id="pwform" class="form-grid"><div class="field-row"><label class="field">Current password</label><input type="password" name="current" required autocomplete="current-password"></div><div class="field-row"><label class="field">New password</label><input type="password" name="password" required minlength="8" autocomplete="new-password"></div><div class="full"><button class="btn primary" type="submit">Update password</button></div></form>
         <h3 class="mt16 mb8">Notifications</h3><button class="btn sm" data-act="notify">Enable browser notifications</button><div class="help">Get a desktop notification when the AI hands a lead to sales or a human-mode chat gets a reply.</div></div></div>`;
+  }
+
+  // Whether the provider accepts the AI key right now (and the credit left), asked live.
+  async function showAiKey() {
+    let r; try { r = (await api('/ai/key')).result; } catch { return; }
+    const box = $('#ai-key'); if (!box) return;
+    box.className = `notice ${r.ok ? 'ok' : r.ok === false ? 'bad' : 'warn'} small mb16`;
+    box.innerHTML = r.ok
+      ? `AI key works (${esc(r.key || '')})${r.balance !== undefined ? ` · <b>$${esc(String(r.balance))}</b> credit left` : ''}${r.keyRemaining != null ? ` · key limit left $${esc(String(r.keyRemaining))}` : ''}.`
+      : `<b>AI key not usable</b> (${esc(r.key || 'no key')}): ${esc(r.detail || '')}. ${esc(r.hint || '')}${r.warning ? ` <br>Note: the key ${esc(r.warning)}` : ''} <br>Until this is fixed every lead reply gets the fallback message.`;
   }
 
   async function drawWhatsApp(p) {
@@ -302,7 +313,11 @@ export async function renderSettings(el, route) {
         case 'user-toggle': { const row = bg.closest('[data-uid]'); const uid = Number(row.dataset.uid); const active = bg.textContent.trim() === 'Enable'; await api(`/users/${uid}`, { method: 'PATCH', body: { active } }); state.users = (await api('/users')).users; return drawPanel(); }
         default: return;
       }
-    } catch (e) { toast(e.message, 'error'); }
+    } catch (e) {
+      // Meta's setup errors come with what to do about them; too long for a toast.
+      if (String(e.message).length > 160) modal({ title: 'That did not work', body: `<div class="notice bad">${esc(e.message)}</div>`, footer: `<button class="btn" data-close>Close</button>` });
+      else toast(e.message, 'error');
+    }
   }
   el.addEventListener('click', (e) => {
     const t = e.target.closest('[data-tab]'); if (t) { view.tab = t.dataset.tab; history.replaceState(null, '', `#/settings/${view.tab}`); return drawPanel(); }
