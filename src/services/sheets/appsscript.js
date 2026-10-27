@@ -4,8 +4,8 @@
 // connection (Settings → Google Sheet) with the env vars as fallback.
 import { activeSheetConfig, configuredLeadTabs } from './active.js';
 
-async function call(op, payload = {}) {
-  const { appsScriptUrl, appsScriptSecret } = activeSheetConfig();
+async function call(firmId, op, payload = {}) {
+  const { appsScriptUrl, appsScriptSecret } = activeSheetConfig(firmId);
   if (!appsScriptUrl) throw new Error('No Apps Script URL set — connect the sheet under Settings → Google Sheet.');
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 40000);
@@ -23,23 +23,23 @@ async function call(op, payload = {}) {
   } finally { clearTimeout(timer); }
 }
 
-export function createAppsScriptProvider() {
-  const leadsTab = () => configuredLeadTabs()[0];
+export function createAppsScriptProvider(firmId) {
+  const leadsTab = () => configuredLeadTabs(firmId)[0];
   return {
     name: 'appsscript',
-    ping: () => call('ping'),
-    readLeads: () => call('readLeads', { tab: leadsTab() }),
+    ping: () => call(firmId, 'ping'),
+    readLeads: () => call(firmId, 'readLeads', { tab: leadsTab() }),
     readTables: async () => {
-      const configured = configuredLeadTabs();
-      const tabs = configured.length ? configured : ((await call('ping')).tabs || []);
+      const configured = configuredLeadTabs(firmId);
+      const tabs = configured.length ? configured : ((await call(firmId, 'ping')).tabs || []);
       const out = [];
       for (const tab of tabs) {
-        try { out.push(await call('readLeads', { tab })); }
+        try { out.push(await call(firmId, 'readLeads', { tab })); }
         catch (e) { if (configured.length) throw e; } // an auto-scanned tab that fails is simply not a leads tab
       }
       return out;
     },
-    updateRow: (rowNumber, values, tab) => call('updateRow', { tab: tab || leadsTab(), rowNumber, values }),
-    appendReply: (row) => call('appendReply', { row }),
+    updateRow: (rowNumber, values, tab) => call(firmId, 'updateRow', { tab: tab || leadsTab(), rowNumber, values }),
+    appendReply: (row) => call(firmId, 'appendReply', { row }),
   };
 }

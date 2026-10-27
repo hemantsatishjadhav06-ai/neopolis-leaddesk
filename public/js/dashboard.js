@@ -1,4 +1,4 @@
-import { api, esc, state, statusPill, modePill, ago, fmtTime, userName, STATUS_LABEL, onEvent, debounce } from './core.js';
+import { api, esc, state, statusPill, modePill, ago, fmtTime, userName, STATUS_LABEL, onEvent, debounce, currentFirm } from './core.js?v=2';
 
 export async function renderDashboard(el) {
   el.innerHTML = `<div class="content"><div class="muted">Loading…</div></div>`;
@@ -8,7 +8,7 @@ export async function renderDashboard(el) {
     const s = d.stats;
     const funnel = [['Leads', s.total], ['Contacted', s.contacted], ['Replied', s.replied], ['Prospects', s.prospects], ['In sales', s.inSales], ['Won', s.won]];
     const max = Math.max(1, ...funnel.map(f => f[1]));
-    const wa = d.followups; const sheet = d.sheet;
+    const wa = d.followups; const sheet = d.sheet; const firm = currentFirm();
     const sysline = (label, ok, text) => `<div class="status-line"><span class="lbl2">${label}</span><span class="dot ${ok === true ? 'g' : ok === false ? 'r' : 'a'}"></span><span>${text}</span></div>`;
     el.innerHTML = `<div class="content">
       <div class="grid c4 mb16">
@@ -29,8 +29,8 @@ export async function renderDashboard(el) {
           <div class="chips mt16">${Object.keys(STATUS_LABEL).map(k => `<a class="chip" href="#/leads/${k}">${STATUS_LABEL[k]}<span class="cnt">${s.byStatus[k] || 0}</span></a>`).join('')}</div>
         </div></div>
         <div class="card"><div class="card-h"><h2>System</h2><a href="#/settings/whatsapp" class="small">Settings →</a></div><div class="card-b">
-          ${sysline('Brain', true, (state.boot?.brain || 'leaddesk') === 'n8n' ? 'n8n workflows (AI replies + journey)' : 'LeadDesk (built-in AI + journey)')}
-          ${sysline('WhatsApp', wa.whatsappConfigured, wa.whatsappConfigured ? 'connected' : 'not configured')}
+          ${sysline('Brain', true, (firm?.is_default ? (state.boot?.brain || 'leaddesk') : 'leaddesk') === 'n8n' ? 'n8n workflows (AI replies + journey)' : 'LeadDesk (built-in AI + journey)')}
+          ${sysline('WhatsApp', wa.whatsappConfigured, wa.whatsappConfigured ? `connected${firm?.display_number ? ` · ${esc(firm.display_number)}` : ''}` : firm && !firm.is_default && firm.phone_source === 'none' ? `${esc(firm.display_number || 'number')} not registered yet — <a href="#/settings/whatsapp">register it →</a>` : 'not configured')}
           ${sysline('Webhook', d.webhook.lastEventAt ? true : (d.webhook.verifiedAt ? null : false), d.webhook.lastEventAt ? `last event ${ago(d.webhook.lastEventAt)}` : d.webhook.verifiedAt ? `verified ${ago(d.webhook.verifiedAt)}, no events yet` : 'not verified yet')}
           ${sysline('Google Sheet', sheet.provider === 'none' ? false : (sheet.lastError && (!sheet.lastWrite || sheet.lastError.at > sheet.lastWrite) ? null : true), sheet.provider === 'none' ? 'not connected' : `${sheet.lastImport ? `imported ${ago(sheet.lastImport.at)} (${sheet.lastImport.rows} rows)` : 'no import yet'}${sheet.pending ? ` · ${sheet.pending} writes pending` : ''}`)}
           ${sysline('AI replies', wa.replyMode === 'live' ? true : wa.replyMode === 'test' ? null : false, wa.replyMode === 'live' ? 'replying to everyone' : wa.replyMode === 'test' ? 'TEST — only test numbers get a reply' : 'OFF — nobody gets a reply')}
@@ -88,6 +88,11 @@ export function describe(a) {
     case 'sheet.import': return `Sheet import: +${d.created} new, ${d.updated} updated, ${d.invalid} invalid`;
     case 'templates.submit': return `${who} submitted journey templates to Meta`;
     case 'settings.update': return `${who} changed settings: ${(d.changed || []).join(', ')}`;
+    case 'firm.created': return `${who} added the firm ${d.name}${d.number ? ` (${d.number})` : ''}`;
+    case 'firm.update': return `${who} edited the firm: ${(d.fields || []).join(', ')}`;
+    case 'firm.number_linked': return `WhatsApp number ${d.phone_number_id} linked to this firm`;
+    case 'wa.number_added': return `${who} added ${d.number} to WhatsApp${d.linked ? ' and linked it to this firm' : ''}`;
+    case 'wa.number_registered': return `${who} registered WhatsApp number ${d.phone_number_id}`;
     default: return `${a.type} ${lead}`;
   }
 }

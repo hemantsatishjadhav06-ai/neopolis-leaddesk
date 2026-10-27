@@ -6,6 +6,7 @@
 import { kvGet, kvSet } from '../db.js';
 import { config } from '../config.js';
 import { getSetting, listFromCsv } from '../settings.js';
+import { currentFirmId, isDefaultFirm, firmPhoneNumberId, firmName } from '../firms.js';
 import { log } from '../logger.js';
 
 export class SendBlocked extends Error {
@@ -29,24 +30,30 @@ export const spendSnapshot = () => {
   return { date: c.date, sends: c.sends, sendCap: config.limits.sendsPerDay, aiReplies: c.ai, aiCap: config.limits.aiRepliesPerDay };
 };
 
-export function isTestRecipient(waNumber) {
+// Test numbers, send mode and reply mode are per firm: a lead is always judged by its own firm's settings.
+export function isTestRecipient(waNumber, firmId = currentFirmId()) {
   const want = digits(waNumber);
   if (!want) return false;
-  return listFromCsv(getSetting('test_recipients')).some(n => digits(n) === want);
+  return listFromCsv(getSetting('test_recipients', firmId)).some(n => digits(n) === want);
 }
 
 // Proactive journey templates follow send_mode; everything reactive follows reply_mode.
-export function governingMode(kind) {
-  return kind === 'journey' ? getSetting('send_mode') : getSetting('reply_mode');
+export function governingMode(kind, firmId = currentFirmId()) {
+  return kind === 'journey' ? getSetting('send_mode', firmId) : getSetting('reply_mode', firmId);
 }
 
 // kind: 'ai' | 'journey' | 'human' | 'system'
 export function assertCanSend(lead, kind = 'system') {
-  const mode = governingMode(kind);
+  const firmId = lead?.firm_id || currentFirmId();
+  const mode = governingMode(kind, firmId);
   const label = kind === 'journey' ? 'Send mode' : 'Reply mode';
   const where = kind === 'journey' ? 'Settings → Outreach' : 'Settings → Outreach → Reply mode';
   const to = lead?.wa_number;
   if (!to) throw new SendBlocked('Lead has no WhatsApp number', 'no-number');
+  // A firm's messages go out from its own number only: never from firm 1's PHONE_NUMBER_ID as a fallback.
+  if (!isDefaultFirm(firmId) && !firmPhoneNumberId(firmId)) {
+    throw new SendBlocked(`${firmName(firmId) || 'This firm'} has no WhatsApp number connected yet — register it under Settings → WhatsApp. Nothing was sent.`, 'no-sender');
+  }
 
   // FAIL CLOSED. Only an exact 'live' sends without restriction; only an exact 'test' sends to the
   // test list. Anything else — a typo, a wrong case, an empty/missing settings row — blocks, rather
@@ -54,7 +61,7 @@ export function assertCanSend(lead, kind = 'system') {
   if (mode === 'live') {
     // allowed, fall through to the spend ceilings
   } else if (mode === 'test') {
-    if (!isTestRecipient(to)) {
+    if (!isTestRecipient(to, firmId)) {
       throw new SendBlocked(`${label} is TEST — ${to} is not in the test numbers list, so nothing was sent.`, 'not-test-recipient');
     }
   } else if (mode === 'off') {

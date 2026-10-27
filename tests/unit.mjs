@@ -162,7 +162,9 @@ await test('picks only the lead-form tabs (not the notes tab, the replies log or
   const tables = readXlsx(workbook).map(s => ({ tab: s.name, headers: s.rows.find(r => r.rowNumber === 1)?.values || [], rows: [] }));
   assert.deepEqual(pickLeadTables(tables).map(t => t.tab), ['02-08-2026', 'Sheet6']);
   assert.deepEqual(pickLeadTables(tables, { configured: ['Sheet6'] }).map(t => t.tab), ['Sheet6']);
-  assert.throws(() => pickLeadTables(tables, { configured: ['visits list'] }), /no whatsapp_number \/ phone_number column/);
+  // A NAME / NUMBER notes tab is never picked on its own while lead-form tabs exist (above), only when named.
+  assert.deepEqual(pickLeadTables(tables, { configured: ['visits list'] }).map(t => t.tab), ['visits list']);
+  assert.throws(() => pickLeadTables(tables, { configured: ['Sheet4'] }), /no whatsapp_number \/ phone_number column/);
   assert.throws(() => pickLeadTables(tables, { configured: ['Nope'] }), /not found/);
 });
 await test('import through a shared link reads every leads tab; a link\'s #gid no longer picks the tab', async () => {
@@ -187,6 +189,48 @@ await test('a configured tab list is respected, and leads tabs it leaves out are
   const r = await importFromSheet({ force: true });
   assert.equal(r.tab, '02-08-2026');
   assert.deepEqual(r.missedTabs, [{ tab: 'Sheet6', rows: 2 }]);
+});
+
+// ---------------- a second firm with a bulk-message sheet ----------------
+const { seedFirmsFromEnv } = await import('../src/services/firm-setup.js');
+const { getFirmBySlug } = await import('../src/firms.js');
+const { getSetting, getJourney } = await import('../src/settings.js');
+const { sheetConnectionPublic } = await import('../src/services/sheets/active.js');
+// Shaped like the MoreSpace sheet: one tab, "Name" and "Number", typed by hand.
+const contacts = buildXlsx([{ name: 'Sheet1', rows: [['Name', 'Number'], ['Kiran Shah', 7075100001], ['Asha Rao', '+91 90000 00101'], ['', '07075100003'], ['Typo', '12345']] }]);
+
+await test('FIRMS seeds a firm once, with its number and its sheet; a re-run changes nothing', async () => {
+  const seed = JSON.stringify([{ name: 'MoreSpace', number: '7075168306', sheet: 'https://docs.google.com/spreadsheets/d/1rAsfjBqTsV0O4NdI126vQkAvhYtUUB-83jyTnEBBzz4/edit?usp=sharing' }]);
+  const [firm] = seedFirmsFromEnv(seed);
+  assert.equal(firm.slug, 'morespace'); assert.equal(firm.display_number, '+917075168306'); assert.equal(firm.phone_number_id, '');
+  const cx = sheetConnectionPublic(firm.id);
+  assert.equal(cx.provider, 'publiclink'); assert.equal(cx.spreadsheetId, '1rAsfjBqTsV0O4NdI126vQkAvhYtUUB-83jyTnEBBzz4');
+  assert.equal(seedFirmsFromEnv(seed)[0].id, firm.id);
+  assert.equal(all('SELECT COUNT(*) AS n FROM firms')[0].n, 2);
+});
+await test('a Name / Number sheet imports into its own firm; the same person can be a lead of both firms', async () => {
+  const firm = getFirmBySlug('morespace');
+  globalThis.fetch = async (url) => (String(url).includes('1rAsfjBqTsV0O4NdI126vQkAvhYtUUB-83jyTnEBBzz4') && String(url).includes('format=xlsx') ? new Response(contacts) : new Response(workbook));
+  const r = await importFromSheet({ force: true, firmId: firm.id });
+  assert.equal(r.tab, 'Sheet1'); assert.equal(r.created, 3); assert.equal(r.invalid, 1);
+  const rows = all('SELECT firm_id, wa_number, full_name, first_name FROM leads WHERE firm_id = ? ORDER BY wa_number', firm.id);
+  assert.deepEqual(rows.map(l => [l.wa_number, l.full_name]), [['+917075100001', 'Kiran Shah'], ['+917075100003', ''], ['+919000000101', 'Asha Rao']]);
+  assert.equal(all("SELECT COUNT(*) AS n FROM leads WHERE wa_number = '+919000000101'")[0].n, 2); // firm 1's Asha is untouched
+  assert.equal((await importFromSheet({ force: true, firmId: firm.id })).created, 0);
+  assert.equal((await importFromSheet({ force: true })).created, 0); // firm 1's import does not see firm 2's leads
+});
+await test("a new firm never inherits firm 1's send mode, test numbers or messages", async () => {
+  const firm = getFirmBySlug('morespace');
+  const { setSettings } = await import('../src/settings.js');
+  setSettings({ send_mode: 'live', reply_mode: 'live', test_recipients: '+919000000001', journey_daily_cap: 25 });
+  assert.equal(getSetting('send_mode', firm.id), 'off'); assert.equal(getSetting('reply_mode', firm.id), 'test');
+  assert.equal(getSetting('test_recipients', firm.id), '');
+  assert.equal(getSetting('journey_daily_cap', firm.id), 25); // pacing is shared until the firm sets its own
+  assert.equal(getSetting('company_name', firm.id), 'MoreSpace');
+  assert.ok(getJourney(firm.id).every(s => s.template.startsWith('morespace_')));
+  setSettings({ journey_steps: '[]' }, firm.id);
+  assert.deepEqual(getJourney(firm.id), []); // an emptied journey stays empty — it does not fall back to firm 1's
+  assert.ok(getJourney().length > 0);
 });
 
 console.log(`\n${passed} unit tests passed${process.exitCode ? ' (with failures)' : ''}`);

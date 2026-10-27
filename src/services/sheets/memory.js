@@ -13,12 +13,18 @@ const seed = [
   ['l:5', '2026-08-08T08:15:00+05:30', 'Land owner units campaign', '02-08-2026', 'fb', 'buying_for_personal_use_/_dream_home', 'ready_to_move-in', 'kokapet_/_neopolis', 'luxury_3.5_/_4_bhk_(2,800_–_4,000_sq._ft.)', '100%_self-funded_/_cash', '3cr_to_3.5cr_', 'sameer@example.com', 'Sameer Khan', '', '9000000005', 'CREATED', '', ''],
 ];
 
-export function createMemoryProvider() {
-  const state = { headers: [...HEADERS], rows: seed.map(r => [...r]), replies: [], tab: '02-08-2026' };
+// Any other firm gets a plain contact list (Name / Number), the shape of a bulk-message sheet. Asha is also
+// firm 1's lead: the same person can be a lead of both firms.
+const CONTACTS = { headers: ['Name', 'Number'], rows: [['Kiran Shah', '9000000101'], ['Asha Rao', '+91 90000 00002'], ['Wrong Number', '12345'], ['Divya Nair', '090000 00103']] };
+
+export function createMemoryProvider(firmId = 1) {
+  const state = Number(firmId) === 1
+    ? { headers: [...HEADERS], rows: seed.map(r => [...r]), replies: [], tab: '02-08-2026' }
+    : { headers: [...CONTACTS.headers], rows: CONTACTS.rows.map(r => [...r]), replies: [], tab: 'Sheet1' };
   return {
     name: 'memory',
     state,
-    ping: async () => ({ ok: true, name: 'FB 02-08-2026 (in-memory test sheet)', tabs: [state.tab, 'Client Replies'] }),
+    ping: async () => ({ ok: true, name: `${state.tab} (in-memory test sheet)`, tabs: [state.tab, 'Client Replies'] }),
     readLeads: async () => ({ tab: state.tab, headers: [...state.headers], rows: state.rows.map((values, i) => ({ rowNumber: i + 2, values: state.headers.map((_, j) => values[j] ?? '') })) }),
     updateRow: async (rowNumber, values) => {
       const row = state.rows[rowNumber - 2]; if (!row) throw new Error('row not found');

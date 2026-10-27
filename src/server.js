@@ -9,6 +9,8 @@ import { apiRouter } from './routes/api.js';
 import { webhookRouter } from './routes/webhook.js';
 import { ingestRouter } from './routes/ingest.js';
 import { bootstrapAdmin } from './services/auth.js';
+import { seedFirmsFromEnv } from './services/firm-setup.js';
+import { listFirms, firmPhoneNumberId } from './firms.js';
 import { startScheduler } from './services/scheduler.js';
 import { clientCount } from './services/events.js';
 import { healthReport } from './services/monitor.js';
@@ -63,7 +65,8 @@ app.use('/api', attachUser, apiRouter);
 
 // Static UI
 const pub = path.join(__dirname, '..', 'public');
-app.use(express.static(pub, { index: false, maxAge: '1h', etag: true }));
+// Scripts and styles revalidate on every load (a cheap 304), so a deploy never pairs a new module with a cached old one.
+app.use(express.static(pub, { index: false, maxAge: '1h', etag: true, setHeaders: (res, file) => { if (/\.(js|css)$/.test(file)) res.setHeader('Cache-Control', 'no-cache'); } }));
 app.get('*', (req, res) => {
   if (req.path.startsWith('/api') || req.path.startsWith('/webhook')) return res.status(404).json({ error: 'Not found' });
   res.sendFile(path.join(pub, 'index.html'));
@@ -76,6 +79,7 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
 });
 
 bootstrapAdmin();
+seedFirmsFromEnv();
 
 // Loud, unmissable warning if the public webhook is not authenticated.
 if (!config.whatsapp.appSecret && !config.security.webhookPathToken) {
@@ -89,6 +93,7 @@ if (!config.whatsapp.appSecret && !config.security.webhookPathToken) {
 const server = app.listen(config.port, () => {
   log.info(`Neopolis LeadDesk listening on :${config.port}`);
   log.info('Config', configSummary());
+  log.info('Firms', listFirms().map(f => ({ id: f.id, name: f.name, number: f.display_number || null, phoneNumberId: firmPhoneNumberId(f) || null, active: !!f.active })));
   startScheduler();
   // Always have a fresh copy from the moment this build goes live.
   runBackup({ reason: 'startup' }).catch(e => log.error('Startup backup failed', e));

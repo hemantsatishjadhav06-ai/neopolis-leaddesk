@@ -79,13 +79,13 @@ export function journeyMessages(leadId) {
   return all(`SELECT id, template_name, status, error, wa_message_id, meta, created_at FROM messages
               WHERE lead_id = ? AND direction = 'out' AND type = 'template' ORDER BY id`, leadId);
 }
-export function journeyState(lead, journey = getJourney(), now = Date.now()) {
+export function journeyState(lead, journey = getJourney(lead.firm_id), now = Date.now()) {
   return computeJourneyState({ msgs: journeyMessages(lead.id), journey, stage: lead.followup_stage || 0, now });
 }
 
 // Bring the stored stage / status in line with the receipts (so the sheet and the dashboard show what the lead
 // really received), and stop outreach when a step can never be delivered.
-export function reconcileJourney(lead, journey = getJourney()) {
+export function reconcileJourney(lead, journey = getJourney(lead?.firm_id)) {
   if (!lead || lead.last_inbound_at || lead.opted_out) return lead;
   const st = journeyState(lead, journey);
   if (st.legacy || st.waiting === 'delivery') return lead; // a step in flight: wait for its receipt before changing anything

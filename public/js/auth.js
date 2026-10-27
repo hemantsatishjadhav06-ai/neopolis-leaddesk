@@ -1,4 +1,4 @@
-import { api, esc, state, toast } from './core.js';
+import { api, esc, state, toast } from './core.js?v=2';
 
 export function renderAuth(root, { needsSetup }, onDone) {
   root.innerHTML = `<div class="auth"><div class="card">

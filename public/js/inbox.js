@@ -1,4 +1,4 @@
-import { api, esc, state, statusPill, modePill, initials, fmtTime, fmtDay, ago, untilText, userName, isWriter, STATUSES, STATUS_LABEL, toast, modal, askText, onEvent, debounce } from './core.js';
+import { api, esc, state, statusPill, modePill, initials, fmtTime, fmtDay, ago, untilText, userName, isWriter, STATUSES, STATUS_LABEL, toast, modal, askText, onEvent, debounce } from './core.js?v=2';
 
 const FILTERS = [['all', 'All'], ['human', 'Needs human'], ['prospects', 'Prospects'], ['ai', 'AI handling'], ['mine', 'Mine']];
 

@@ -33,6 +33,10 @@ WhatsApp AI concierge + human-in-the-loop sales inbox, built on Meta's **officia
 
 Roles: **admin** (everything), **agent** (inbox, leads, reviews), **viewer** (read-only).
 
+## Several firms, one LeadDesk
+
+Each firm has its own WhatsApp number, Google Sheet, AI knowledge, journey messages and send / reply modes. The team picks the firm at the top left. Inbound messages are routed by the number they were sent to, and each firm only ever sends from its own number. Add firms under **Settings → Firms** or with the `FIRMS` variable; see `docs/FIRMS.md`. The first firm keeps using the environment variables it always did.
+
 ## Lead statuses
 
 `CREATED → CONTACTED → FOLLOWUP_1 … FOLLOWUP_5 → NO_RESPONSE` (the automated journey) · any reply → `REPLIED` · AI qualifies → `PROSPECT` · salesperson takes it → `IN_SALES → VISIT_BOOKED → WON / LOST` · "stop" → `OPTED_OUT` (never messaged again).
@@ -64,7 +68,9 @@ See `docs/DEPLOY.md` (Railway) and `docs/SHEET-CONNECTOR.md` (Google Sheet). Con
 ```
 src/server.js            Express app, static UI, webhook + API mounting
 src/config.js            environment → config (all secrets)
-src/settings.js          editable settings stored in SQLite (AI prompt, outreach, templates…)
+src/settings.js          editable settings stored in SQLite (AI prompt, outreach, templates…), per firm
+src/firms.js             firms: which number / sheet / settings a lead or a request belongs to
+src/firm-presets.js      a new firm's starting AI prompt and journey (e.g. MoreSpace)
 src/db.js                SQLite schema (node:sqlite, no native build)
 src/services/whatsapp.js Graph API client (send text/template, mark read, signature check, setup helpers)
 src/services/ai.js       OpenRouter call → reply + structured analysis (intent, corridor, budget, qualified, hand-off)

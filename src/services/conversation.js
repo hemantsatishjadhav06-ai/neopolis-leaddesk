@@ -1,10 +1,10 @@
 // Inbound pipeline: webhook payload → lead → (opt-out | AI reply | human queue) → sheet mirror.
 // Also the outbound helpers used by the inbox (human replies, templates).
 import { get } from '../db.js';
-import { config } from '../config.js';
 import { assertCanSend, noteSent, SendBlocked } from './guard.js';
 import { getSetting, listFromCsv, journeyStep, getJourney } from '../settings.js';
 import { reconcileJourney, stepOf } from './journey.js';
+import { currentFirmId, inFirm, getFirm, firmForInbound, firmBrain, firmPhoneNumberId } from '../firms.js';
 import { normalizePhone, firstName } from '../util/normalize.js';
 import { stampIst } from '../util/time.js';
 import * as wa from './whatsapp.js';
@@ -41,22 +41,25 @@ export function extractText(m) {
   }
 }
 
-function isOptOut(text) {
+function isOptOut(text, firmId = currentFirmId()) {
   const t = String(text || '').toLowerCase();
-  return listFromCsv(getSetting('optout_keywords')).some(k => k && t.includes(k.toLowerCase()));
+  return listFromCsv(getSetting('optout_keywords', firmId)).some(k => k && t.includes(k.toLowerCase()));
 }
 
 // Entry point from the webhook route — returns quickly; processing continues in the background.
-export function ingestWebhook(body) {
+// Each message belongs to the firm whose business number it was sent to (metadata.phone_number_id).
+// firmId forces one (the inbound simulator in Settings uses it).
+export function ingestWebhook(body, { firmId = null } = {}) {
   const jobs = [];
   for (const entry of body?.entry || []) {
     for (const change of entry.changes || []) {
       const value = change.value || {};
       const phoneNumberId = value.metadata?.phone_number_id || '';
+      const firm = (firmId && getFirm(firmId)) || firmForInbound(value.metadata || {});
       const contacts = value.contacts || [];
       for (const m of value.messages || []) {
         const contact = contacts.find(c => c.wa_id === m.from) || contacts[0];
-        jobs.push(serial(m.from, () => handleInbound({ message: m, profileName: contact?.profile?.name || '', phoneNumberId }).catch(e => log.error('inbound failed', e))));
+        jobs.push(serial(`${firm.id}:${m.from}`, () => inFirm(firm.id, () => handleInbound({ message: m, profileName: contact?.profile?.name || '', phoneNumberId, firmId: firm.id })).catch(e => log.error('inbound failed', e))));
       }
       for (const s of value.statuses || []) {
         try { handleStatus(s); }
@@ -75,22 +78,24 @@ function handleStatus(s) {
   const msg = updateMessageStatus(s.id, s.status, { error });
   if (!msg || s.status !== 'failed') return;
   log.warn(`Delivery failed for lead ${msg.lead_id} (${msg.template_name ? `template ${msg.template_name}` : msg.type}): ${error || 'no reason given'}`);
-  if (msg.type !== 'template' || config.brain === 'n8n') return;
+  const owner = getLead(msg.lead_id);
+  if (!owner || msg.type !== 'template' || firmBrain(owner.firm_id) === 'n8n') return;
   // A journey step that did not arrive is not done: put the lead back on it now (the scheduler re-sends it after
   // a retry gap, and never moves on to the next step until this one is delivered).
-  const journey = getJourney();
+  const journey = getJourney(owner.firm_id);
   if (stepOf(msg, journey) < 0) return;
-  const lead = reconcileJourney(getLead(msg.lead_id), journey);
+  const lead = reconcileJourney(owner, journey);
   audit('followup.failed', { leadId: msg.lead_id, data: { template: msg.template_name, error: error || 'Message failed', undelivered: true, paused: !!lead?.outreach_paused } });
 }
 
-export async function handleInbound({ message, profileName = '', phoneNumberId = '' }) {
+export async function handleInbound({ message, profileName = '', phoneNumberId = '', firmId = currentFirmId() }) {
   const waNumber = normalizePhone('+' + String(message.from).replace(/^\+/, ''));
   if (!waNumber) { log.warn('inbound from un-normalisable number', message.from); return; }
   if (message.id && get('SELECT id FROM messages WHERE wa_message_id = ?', message.id)) return; // webhook retry → ignore
+  const S = (key) => getSetting(key, firmId);
 
-  let lead = getLeadByNumber(waNumber);
-  if (!lead) lead = createLead({ wa_number: waNumber, full_name: profileName, source: 'inbound', status: 'REPLIED' });
+  let lead = getLeadByNumber(waNumber, firmId);
+  if (!lead) lead = createLead({ firm_id: firmId, wa_number: waNumber, full_name: profileName, source: 'inbound', status: 'REPLIED' });
   else if (!lead.full_name && profileName) lead = updateLead(lead.id, { full_name: profileName, first_name: firstName(profileName) }, { silent: true });
 
   const { text, type } = extractText(message);
@@ -103,16 +108,16 @@ export async function handleInbound({ message, profileName = '', phoneNumberId =
   if (Object.keys(patch).length) { lead = updateLead(lead.id, patch); audit('lead.status', { leadId: lead.id, data: { from: 'auto', to: patch.status, reason: 'inbound' } }); }
   const lastReply = `${stampIst()} - ${String(text || `[${type}]`).replace(/\s+/g, ' ').slice(0, 80)}`;
   mirrorLead(lead, lastReply);
-  if (getSetting('mark_read')) wa.markRead(message.id, { phoneNumberId }).catch(() => {});
+  if (S('mark_read')) wa.markRead(message.id, { phoneNumberId }).catch(() => {});
 
   // Opt-out honoured regardless of mode.
-  if (text && isOptOut(text)) {
+  if (text && isOptOut(text, firmId)) {
     lead = updateLead(lead.id, { status: 'OPTED_OUT', opted_out: 1, outreach_paused: 1 });
     audit('lead.optout', { leadId: lead.id });
     mirrorLead(lead, lastReply);
     let replyText = '';
-    if (getSetting('ai_enabled') && lead.mode === 'ai') {
-      replyText = getSetting('optout_reply');
+    if (S('ai_enabled') && lead.mode === 'ai') {
+      replyText = S('optout_reply');
       await safeSend(lead, { text: replyText, sender: 'system', inReplyTo: inbound.id, phoneNumberId });
     }
     mirrorReply(lead, { message: text, aiReply: replyText });
@@ -120,27 +125,28 @@ export async function handleInbound({ message, profileName = '', phoneNumberId =
   }
 
   let aiReplyText = '';
-  if (lead.mode === 'ai' && getSetting('ai_enabled') && config.brain !== 'n8n') {
+  if (lead.mode === 'ai' && S('ai_enabled') && firmBrain(firmId) !== 'n8n') {
     aiReplyText = await aiRespond(lead, inbound, { phoneNumberId });
   } else {
-    broadcast('alert', { kind: 'human_unread', lead_id: lead.id, name: lead.full_name || lead.wa_number, preview: text.slice(0, 80) });
-    if (getSetting('alert_on_human_unread')) sendAlertWebhook({ type: 'human_unread', lead: serializeLead(lead), message: text }).catch(() => {});
+    broadcast('alert', { kind: 'human_unread', lead_id: lead.id, firm_id: firmId, name: lead.full_name || lead.wa_number, preview: text.slice(0, 80) });
+    if (S('alert_on_human_unread')) sendAlertWebhook({ type: 'human_unread', lead: serializeLead(lead), message: text }).catch(() => {});
   }
   mirrorReply(getLead(lead.id), { message: text || `[${type}]`, aiReply: aiReplyText });
 }
 
 async function aiRespond(lead, inbound, { phoneNumberId }) {
-  const history = getHistory(lead.id, Number(getSetting('ai_history_messages')) || 16, inbound.id);
+  const S = (key) => getSetting(key, lead.firm_id);
+  const history = getHistory(lead.id, Number(S('ai_history_messages')) || 16, inbound.id);
   let analysis;
   try {
     analysis = await generateReply({ lead, history, inboundText: inbound.body || `[${inbound.type} message]` });
   } catch (e) {
     log.error('AI generation failed', e);
     audit('ai.error', { leadId: lead.id, data: { error: e.message } });
-    const fallback = getSetting('ai_fallback_reply');
+    const fallback = S('ai_fallback_reply');
     await safeSend(lead, { text: fallback, sender: 'ai', inReplyTo: inbound.id, phoneNumberId, meta: { error: e.message, fallback: true } });
     // AI stays ON even after an error — a human is alerted but the bot keeps the chat unless someone takes over.
-    broadcast('alert', { kind: 'human_unread', lead_id: lead.id, name: lead.full_name || lead.wa_number, preview: 'AI error — fallback sent, bot still on' });
+    broadcast('alert', { kind: 'human_unread', lead_id: lead.id, firm_id: lead.firm_id, name: lead.full_name || lead.wa_number, preview: 'AI error — fallback sent, bot still on' });
     return fallback;
   }
 
@@ -159,7 +165,7 @@ async function aiRespond(lead, inbound, { phoneNumberId }) {
   const { reply, ...meta } = analysis;
   await safeSend(lead, { text: reply, sender: 'ai', inReplyTo: inbound.id, phoneNumberId, meta });
 
-  const shouldHandoff = getSetting('auto_handoff') && (analysis.handoff || analysis.qualified) && analysis.intent !== 'opt_out';
+  const shouldHandoff = S('auto_handoff') && (analysis.handoff || analysis.qualified) && analysis.intent !== 'opt_out';
   if (shouldHandoff) {
     const reason = analysis.handoff_reason || (analysis.qualified ? 'Lead qualified (corridor + budget known)' : 'AI requested hand-off');
     flagForSales(getLead(lead.id), { reason, byAi: true });
@@ -192,8 +198,11 @@ export async function sendOut(lead, { text, sender = 'human', userId = null, inR
     }
     throw e;
   }
+  // From the number the lead wrote to, else the lead's firm's number (firm 1: PHONE_NUMBER_ID). Recorded on the message.
+  const from = phoneNumberId || firmPhoneNumberId(lead.firm_id) || undefined;
+  if (from) meta = { ...meta, from };
   try {
-    const r = await wa.sendText(lead.wa_number, text, { phoneNumberId: phoneNumberId || undefined });
+    const r = await wa.sendText(lead.wa_number, text, { phoneNumberId: from });
     noteSent(kind);
     return addMessage(lead.id, { direction: 'out', sender, sender_user_id: userId, type: 'text', body: text, wa_message_id: r.id || null, status: 'sent', in_reply_to: inReplyTo, meta });
   } catch (e) {
@@ -214,8 +223,10 @@ export async function sendTemplateOut(lead, { name, language, bodyParams = [], s
     }
     throw e;
   }
+  const from = firmPhoneNumberId(lead.firm_id) || undefined;
+  if (from) meta = { ...meta, from };
   try {
-    const r = await wa.sendTemplate(lead.wa_number, { name, language: language || getSetting('template_language'), bodyParams });
+    const r = await wa.sendTemplate(lead.wa_number, { name, language: language || getSetting('template_language', lead.firm_id), bodyParams, phoneNumberId: from });
     noteSent(kind);
     return addMessage(lead.id, { direction: 'out', sender, sender_user_id: userId, type: 'template', template_name: name, body: bodyText, wa_message_id: r.id || null, status: 'sent', meta: { ...meta, bodyParams } });
   } catch (e) {
@@ -226,11 +237,11 @@ export async function sendTemplateOut(lead, { name, language, bodyParams = [], s
 }
 
 export function renderTemplateText(key, lead) {
-  const step = journeyStep(key);
+  const step = journeyStep(key, lead.firm_id);
   const t = step ? step.text : '';
   return t.replace(/\{\{\s*1\s*\}\}/g, lead.first_name || 'there');
 }
-export const templateChoices = (lead) => getJourney().map(s => ({ key: s.key, day: s.day, name: s.template, text: renderTemplateText(s.key, lead) }));
+export const templateChoices = (lead) => getJourney(lead.firm_id).map(s => ({ key: s.key, day: s.day, name: s.template, text: renderTemplateText(s.key, lead) }));
 
 // Human reply from the inbox
 export async function humanReply(leadId, userId, text) {
@@ -245,9 +256,9 @@ export async function humanReply(leadId, userId, text) {
 export async function humanTemplate(leadId, userId, key) {
   const lead = getLead(leadId);
   if (!lead) throw new Error('Lead not found');
-  const step = journeyStep(key);
+  const step = journeyStep(key, lead.firm_id);
   if (!step) throw new Error('Template not found in the journey');
-  const params = getSetting('templates_use_name_param') ? [lead.first_name || 'there'] : [];
+  const params = getSetting('templates_use_name_param', lead.firm_id) ? [lead.first_name || 'there'] : [];
   const msg = await sendTemplateOut(lead, { name: step.template, bodyParams: params, sender: 'human', userId, bodyText: renderTemplateText(step.key, lead) });
   audit('message.template.human', { leadId, userId, data: { name: step.template } });
   return msg;

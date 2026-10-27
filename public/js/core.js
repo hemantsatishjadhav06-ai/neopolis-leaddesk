@@ -1,10 +1,25 @@
 // Shared runtime: state, API client, router, layout, live events, helpers.
-export const state = { user: null, boot: null, users: [], route: { view: 'dashboard', id: null, tab: null }, alerts: 0, sse: null, listeners: new Set() };
+export const state = { user: null, boot: null, users: [], firms: [], firmId: null, route: { view: 'dashboard', id: null, tab: null }, alerts: 0, sse: null, listeners: new Set() };
+
+// The firm the team is looking at: every list, setting and send in the UI is for this firm (X-Firm-Id).
+export const currentFirm = () => state.firms.find(f => f.id === state.firmId) || state.firms[0] || null;
+export const firmName = (id) => state.firms.find(f => f.id === id)?.name || '';
+export function setFirms(firms) {
+  state.firms = firms || [];
+  let saved = null; try { saved = Number(localStorage.getItem('ld.firm')); } catch { /* storage may be blocked */ }
+  if (!state.firms.some(f => f.id === state.firmId)) state.firmId = state.firms.some(f => f.id === saved) ? saved : (state.firms[0]?.id || null);
+}
+export function selectFirm(id) {
+  if (!state.firms.some(f => f.id === Number(id))) return false;
+  state.firmId = Number(id);
+  try { localStorage.setItem('ld.firm', String(state.firmId)); } catch { /* ignore */ }
+  return true;
+}
 
 export async function api(path, { method = 'GET', body, raw = false } = {}) {
   const res = await fetch('/api' + path, {
     method,
-    headers: { 'X-Requested-With': 'fetch', ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    headers: { 'X-Requested-With': 'fetch', ...(state.firmId ? { 'X-Firm-Id': String(state.firmId) } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
     body: body ? JSON.stringify(body) : undefined,
     credentials: 'same-origin',
   });
@@ -96,9 +111,13 @@ export function connectEvents() {
 function handleAlert(e) {
   let d = {}; try { d = JSON.parse(e.data); } catch { return; }
   const name = esc(d.name || 'A lead');
-  if (d.kind === 'handoff') toast(`<b>${name}</b> is ready for sales — ${esc(d.reason || 'qualified')}. <a href="#/inbox/${d.lead_id}">Open chat</a>`, 'alert', { html: true, timeout: 9000 });
-  else if (d.kind === 'human_unread') toast(`<b>${name}</b> replied (AI is off for this chat). <a href="#/inbox/${d.lead_id}">Reply</a>`, 'alert', { html: true, timeout: 9000 });
-  try { if (Notification?.permission === 'granted') new Notification(d.kind === 'handoff' ? `Ready for sales: ${d.name}` : `New reply: ${d.name}`, { body: d.reason || d.preview || '' }); } catch { /* ignore */ }
+  // An alert for another firm says which, and its link switches to that firm (main.js).
+  const other = d.firm_id && d.firm_id !== state.firmId ? firmName(d.firm_id) : '';
+  const tag = other ? `[${esc(other)}] ` : '';
+  const link = (label) => `<a href="#/inbox/${d.lead_id}" data-firm="${Number(d.firm_id) || ''}">${label}</a>`;
+  if (d.kind === 'handoff') toast(`${tag}<b>${name}</b> is ready for sales — ${esc(d.reason || 'qualified')}. ${link('Open chat')}`, 'alert', { html: true, timeout: 9000 });
+  else if (d.kind === 'human_unread') toast(`${tag}<b>${name}</b> replied (AI is off for this chat). ${link('Reply')}`, 'alert', { html: true, timeout: 9000 });
+  try { if (Notification?.permission === 'granted') new Notification(d.kind === 'handoff' ? `${other ? `${other}: ` : ''}Ready for sales: ${d.name}` : `${other ? `${other}: ` : ''}New reply: ${d.name}`, { body: d.reason || d.preview || '' }); } catch { /* ignore */ }
 }
 export function onEvent(fn) { state.listeners.add(fn); return () => state.listeners.delete(fn); }
 
@@ -114,9 +133,14 @@ const NAV = [['dashboard', 'Dashboard'], ['inbox', 'Inbox'], ['leads', 'Leads'],
 
 export function shell(contentHtml, { title = '', actions = '' } = {}) {
   const u = state.user;
+  const firm = currentFirm();
+  const switcher = state.firms.length > 1
+    ? `<label class="firm-switch"><span class="lbl">Firm</span><select data-action="firm" aria-label="Firm">${state.firms.map(f => `<option value="${f.id}" ${f.id === firm?.id ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select></label>`
+    : '';
   return `<div class="shell">
     <aside class="sidebar">
-      <div class="brand"><div class="logo">N</div><div><div class="name">${esc(state.boot?.app_name || 'LeadDesk')}</div><div class="sub">${esc(state.boot?.company_name || '')}</div></div></div>
+      <div class="brand"><div class="logo">${esc((firm?.name || 'N').trim().charAt(0).toUpperCase())}</div><div><div class="name">${esc(state.boot?.app_name || 'LeadDesk')}</div><div class="sub">${esc(firm?.name || state.boot?.company_name || '')}</div></div></div>
+      ${switcher}
       <nav class="nav">${NAV.map(([k, l]) => `<a href="#/${k}" class="${state.route.view === k ? 'active' : ''}">${ICONS[k]}<span class="t">${l}</span>${k === 'inbox' && state.alerts ? `<span class="badge red">${state.alerts}</span>` : ''}</a>`).join('')}</nav>
       <div class="spacer"></div>
       <div class="userbox"><div class="avatar">${esc(initials(u?.name))}</div><div class="info"><div>${esc(u?.name || '')}</div><div class="role">${esc(u?.role || '')}</div></div><button title="Sign out" data-action="logout">⎋</button></div>

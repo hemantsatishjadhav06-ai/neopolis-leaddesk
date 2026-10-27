@@ -2,6 +2,7 @@
 // (intent, extracted corridor/budget/timeline, qualified, hand-off) as JSON.
 import { config } from '../config.js';
 import { getSetting } from '../settings.js';
+import { currentFirmId } from '../firms.js';
 import { log } from '../logger.js';
 import { createLimiter } from '../util/limit.js';
 
@@ -11,7 +12,9 @@ export const aiQueueStats = () => aiLimit.stats();
 
 export const INTENTS = ['greeting', 'interest', 'question', 'price', 'location', 'loan', 'visit', 'callback', 'language', 'opt_out', 'complaint', 'unrelated', 'other'];
 
-const OUTPUT_CONTRACT = `
+// The JSON contract every reply follows. The hand-off line names the lead's firm, and what counts as "qualified"
+// is the firm's own rule (ai_qualify_rule): corridor + budget for a property firm, something else elsewhere.
+const outputContract = (firmId) => `
 OUTPUT FORMAT — respond with ONE JSON object only, no markdown, with exactly these keys:
 {
   "reply": "the WhatsApp message to send to the buyer (plain text, line breaks allowed)",
@@ -21,12 +24,12 @@ OUTPUT FORMAT — respond with ONE JSON object only, no markdown, with exactly t
   "budget": "budget range the buyer mentioned, if known (else null)",
   "timeline": "when they want to buy, if known (else null)",
   "configuration": "unit type/size they want, if known (else null)",
-  "qualified": true if BOTH corridor and budget are now known OR the buyer asked for a site visit / call, else false,
+  "qualified": true if ${getSetting('ai_qualify_rule', firmId)}, else false,
   "handoff": true if a human consultant should take over now (buyer asks for a visit, a call, exact prices/availability, a complaint, an angry message, wants to talk to a person, or asks something you cannot answer from the facts), else false,
   "handoff_reason": "short reason when handoff is true, else null",
   "sentiment": "positive" | "neutral" | "negative"
 }
-When handoff is true, your reply must tell the buyer a Neopolis consultant will connect with them shortly (do not promise a specific time).`;
+When handoff is true, your reply must tell the buyer a ${getSetting('company_name', firmId)} consultant will connect with them shortly (do not promise a specific time).`;
 
 function leadFacts(lead) {
   const facts = [];
@@ -42,7 +45,8 @@ function leadFacts(lead) {
 }
 
 export function buildMessages({ lead, history, inboundText }) {
-  const system = `${getSetting('ai_system_prompt')}\n\n${leadFacts(lead)}\n${OUTPUT_CONTRACT}`;
+  const firmId = lead.firm_id || currentFirmId();
+  const system = `${getSetting('ai_system_prompt', firmId)}\n\n${leadFacts(lead)}\n${outputContract(firmId)}`;
   const msgs = [{ role: 'system', content: system }];
   for (const m of history) {
     if (m.direction === 'in') msgs.push({ role: 'user', content: m.body || `[${m.type}]` });
@@ -52,7 +56,7 @@ export function buildMessages({ lead, history, inboundText }) {
   return msgs;
 }
 
-function coerce(obj, inboundText) {
+function coerce(obj, inboundText, firmId = currentFirmId()) {
   const s = (v) => (v == null || v === '' || v === 'null' ? null : String(v).trim().slice(0, 120));
   const out = {
     reply: String(obj.reply || '').trim(),
@@ -64,7 +68,7 @@ function coerce(obj, inboundText) {
     handoff_reason: s(obj.handoff_reason),
     sentiment: ['positive', 'neutral', 'negative'].includes(obj.sentiment) ? obj.sentiment : 'neutral',
   };
-  if (!out.reply) out.reply = getSetting('ai_fallback_reply');
+  if (!out.reply) out.reply = getSetting('ai_fallback_reply', firmId);
   return out;
 }
 
@@ -109,14 +113,15 @@ export async function generateReply(args) {
 
 async function generateReplyInner({ lead, history, inboundText }) {
   const started = Date.now();
+  const firmId = lead.firm_id || currentFirmId();
   if (config.ai.mock || config.ai.provider === 'mock') {
-    return { ...coerce(mockReply({ lead, inboundText }), inboundText), model: 'mock', latency_ms: Date.now() - started };
+    return { ...coerce(mockReply({ lead, inboundText }), inboundText, firmId), model: 'mock', latency_ms: Date.now() - started };
   }
   if (!config.ai.apiKey) throw new Error('AI is not configured (OPENROUTER_API_KEY missing)');
-  const model = getSetting('ai_model');
+  const model = getSetting('ai_model', firmId);
   const body = {
     model,
-    temperature: Number(getSetting('ai_temperature')),
+    temperature: Number(getSetting('ai_temperature', firmId)),
     max_tokens: 600,
     response_format: { type: 'json_object' },
     messages: buildMessages({ lead, history, inboundText }),
@@ -135,8 +140,8 @@ async function generateReplyInner({ lead, history, inboundText }) {
     const json = JSON.parse(text);
     const content = json.choices?.[0]?.message?.content || '';
     const parsed = parseJsonLoose(content);
-    if (!parsed) { log.warn('AI returned non-JSON; using raw text as reply'); return { ...coerce({ reply: content }, inboundText), model, latency_ms: Date.now() - started, usage: json.usage }; }
-    return { ...coerce(parsed, inboundText), model, latency_ms: Date.now() - started, usage: json.usage };
+    if (!parsed) { log.warn('AI returned non-JSON; using raw text as reply'); return { ...coerce({ reply: content }, inboundText, firmId), model, latency_ms: Date.now() - started, usage: json.usage }; }
+    return { ...coerce(parsed, inboundText, firmId), model, latency_ms: Date.now() - started, usage: json.usage };
   } finally { clearTimeout(timer); }
 }
 

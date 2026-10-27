@@ -4,6 +4,7 @@ import { config } from '../config.js';
 import { toWaId } from '../util/normalize.js';
 import { log } from '../logger.js';
 import { DEFAULT_JOURNEY } from '../settings.js';
+import { presetTemplateNames } from '../firm-presets.js';
 
 const wa = config.whatsapp;
 const BASE = () => `https://graph.facebook.com/${wa.graphVersion}`;
@@ -43,7 +44,7 @@ export function isConfigured() { return wa.mock || (!!wa.token && !!wa.phoneNumb
 
 export async function sendText(to, text, { phoneNumberId } = {}) {
   const pid = phoneNumberId || wa.phoneNumberId;
-  if (wa.mock) { const id = fakeId(); mockOutbox.push({ to, type: 'text', text, id, ts: Date.now() }); return { id }; }
+  if (wa.mock) { const id = fakeId(); mockOutbox.push({ to, from: pid || null, type: 'text', text, id, ts: Date.now() }); return { id }; }
   if (!wa.token || !pid) throw new WhatsAppError('WhatsApp is not configured (WHATSAPP_TOKEN / PHONE_NUMBER_ID missing)');
   const r = await graph('POST', `${pid}/messages`, { body: { messaging_product: 'whatsapp', recipient_type: 'individual', to: toWaId(to), type: 'text', text: { preview_url: true, body: text } } });
   return { id: r.messages?.[0]?.id, raw: r };
@@ -51,7 +52,7 @@ export async function sendText(to, text, { phoneNumberId } = {}) {
 
 export async function sendTemplate(to, { name, language = 'en', bodyParams = [], phoneNumberId } = {}) {
   const pid = phoneNumberId || wa.phoneNumberId;
-  if (wa.mock) { const id = fakeId(); mockOutbox.push({ to, type: 'template', name, bodyParams, id, ts: Date.now() }); return { id }; }
+  if (wa.mock) { const id = fakeId(); mockOutbox.push({ to, from: pid || null, type: 'template', name, bodyParams, id, ts: Date.now() }); return { id }; }
   if (!wa.token || !pid) throw new WhatsAppError('WhatsApp is not configured (WHATSAPP_TOKEN / PHONE_NUMBER_ID missing)');
   const template = { name, language: { code: language } };
   if (bodyParams.length) template.components = [{ type: 'body', parameters: bodyParams.map(t => ({ type: 'text', text: String(t) })) }];
@@ -128,24 +129,30 @@ export async function tokenHealth() {
 }
 
 // ---- Admin / setup helpers (used by the Settings → WhatsApp panel) ----
+const mockNumbers = new Map(); // mock mode: numbers added through the registration wizard, id -> display number
 export async function phoneInfo(phoneNumberId = wa.phoneNumberId) {
+  if (wa.mock && mockNumbers.has(phoneNumberId)) return { id: phoneNumberId, display_phone_number: mockNumbers.get(phoneNumberId), verified_name: 'Mock Business', quality_rating: 'GREEN', code_verification_status: 'VERIFIED', status: 'CONNECTED' };
   if (wa.mock) return { id: 'MOCK', display_phone_number: '+91 00000 00000', verified_name: 'Mock Business', quality_rating: 'GREEN', code_verification_status: 'VERIFIED', status: 'CONNECTED' };
   return graph('GET', phoneNumberId, { query: { fields: 'id,display_phone_number,verified_name,quality_rating,code_verification_status,status,name_status,messaging_limit_tier' } });
 }
 export async function listPhoneNumbers(wabaId = wa.wabaId) {
-  if (wa.mock) return { data: [await phoneInfo()] };
+  if (wa.mock) return { data: [await phoneInfo(), ...await Promise.all([...mockNumbers.keys()].map(id => phoneInfo(id)))] };
   return graph('GET', `${wabaId}/phone_numbers`, { query: { fields: 'id,display_phone_number,verified_name,quality_rating,code_verification_status,status,name_status' } });
 }
 export async function addPhoneNumber({ cc = '91', phoneNumber, verifiedName, wabaId = wa.wabaId }) {
+  if (wa.mock) { const id = `10${cc}${phoneNumber}`.replace(/\D/g, ''); mockNumbers.set(id, `+${cc} ${phoneNumber}`); return { id }; }
   return graph('POST', `${wabaId}/phone_numbers`, { body: { cc, phone_number: phoneNumber, verified_name: verifiedName } });
 }
 export async function requestCode(phoneNumberId, { method = 'SMS', language = 'en' } = {}) {
+  if (wa.mock) return { success: true, mock: true };
   return graph('POST', `${phoneNumberId}/request_code`, { body: { code_method: method, language } });
 }
 export async function verifyCode(phoneNumberId, code) {
+  if (wa.mock) return { success: true, mock: true };
   return graph('POST', `${phoneNumberId}/verify_code`, { body: { code: String(code).trim() } });
 }
 export async function registerNumber(phoneNumberId, pin) {
+  if (wa.mock) return { success: true, mock: true };
   return graph('POST', `${phoneNumberId}/register`, { body: { messaging_product: 'whatsapp', pin: String(pin) } });
 }
 export async function subscribeApp(wabaId = wa.wabaId) {
@@ -157,7 +164,7 @@ export async function subscribedApps(wabaId = wa.wabaId) {
   return graph('GET', `${wabaId}/subscribed_apps`, {});
 }
 export async function listTemplates(wabaId = wa.wabaId) {
-  if (wa.mock) return { data: DEFAULT_JOURNEY.map(s => ({ name: s.template, status: 'APPROVED', language: 'en', category: 'MARKETING' })) };
+  if (wa.mock) return { data: [...DEFAULT_JOURNEY.map(s => s.template), ...presetTemplateNames()].map(name => ({ name, status: 'APPROVED', language: 'en', category: 'MARKETING' })) };
   return graph('GET', `${wabaId}/message_templates`, { query: { fields: 'name,status,language,category,components', limit: 100 } });
 }
 export async function createTemplate(wabaId = wa.wabaId, tpl) {

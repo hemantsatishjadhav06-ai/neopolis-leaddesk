@@ -1,10 +1,12 @@
-import { api, esc, state, isAdmin, toast, modal, confirmDialog, ago, fmtTime } from './core.js';
+import { api, esc, state, isAdmin, toast, modal, confirmDialog, ago, fmtTime, currentFirm } from './core.js?v=2';
 
-const SECTIONS = [['ai', 'AI concierge'], ['outreach', 'Outreach & follow-ups'], ['whatsapp', 'WhatsApp'], ['sheet', 'Google Sheet'], ['team', 'Team'], ['account', 'My account']];
+const SECTIONS = [['ai', 'AI concierge'], ['outreach', 'Outreach & follow-ups'], ['whatsapp', 'WhatsApp'], ['sheet', 'Google Sheet'], ['firms', 'Firms'], ['team', 'Team'], ['account', 'My account']];
+// Sections whose settings belong to the firm selected at the top left (the rest are shared by every firm).
+const FIRM_SECTIONS = ['ai', 'outreach', 'whatsapp', 'sheet'];
 
 export async function renderSettings(el, route) {
   const view = { tab: SECTIONS.some(s => s[0] === route.tab) ? route.tab : 'ai', settings: null, defaults: null, config: null, readOnly: !isAdmin() };
-  try { const r = await api('/settings'); Object.assign(view, { settings: r.settings, defaults: r.defaults, config: r.config }); } catch (e) { el.innerHTML = `<div class="content"><div class="notice bad">${esc(e.message)}</div></div>`; return; }
+  try { const r = await api('/settings'); Object.assign(view, { settings: r.settings, defaults: r.defaults, config: r.config, firm: r.firm }); } catch (e) { el.innerHTML = `<div class="content"><div class="notice bad">${esc(e.message)}</div></div>`; return; }
   el.innerHTML = `<div class="content"><div class="settings"><div class="snav" id="snav"></div><div class="panel" id="panel"></div></div></div>`;
   const $ = (s) => el.querySelector(s);
   const S = () => view.settings;
@@ -21,12 +23,15 @@ export async function renderSettings(el, route) {
   const saveBar = () => view.readOnly ? `<div class="notice info small">Only admins can change settings.</div>` : `<div class="row between mt16"><span class="small muted" id="savemsg"></span><button class="btn primary" data-act="save">Save changes</button></div>`;
 
   function drawNav() { $('#snav').innerHTML = SECTIONS.map(([k, l]) => `<button class="${view.tab === k ? 'active' : ''}" data-tab="${k}">${l}</button>`).join(''); }
+  const firm = () => view.firm || currentFirm();
+  // Which firm these settings are for, when there is more than one.
+  const firmNote = () => state.firms.length > 1 && FIRM_SECTIONS.includes(view.tab) ? `<div class="notice info small mb16">Settings for <b>${esc(firm()?.name || '')}</b>${firm()?.display_number ? ` (${esc(firm().display_number)})` : ''}. Switch firm with the selector at the top left.</div>` : '';
 
   async function drawPanel() {
     drawNav();
     const p = $('#panel');
-    const brainNote = view.config.brain === 'n8n' ? `<div class="notice info small mb16"><b>n8n is the brain.</b> AI replies and the 13-day journey run in your n8n workflows and are streamed into this inbox. Take-over / hand-back and status changes here are written to the sheet, which n8n obeys. The AI and outreach settings below only apply if you ever switch the brain to LeadDesk (BRAIN env var).</div>` : '';
-    if (view.tab === 'ai') p.innerHTML = `<form id="sform"><div class="card"><div class="card-h"><h2>AI concierge</h2><button class="btn sm" data-act="ai-test" type="button">Test the AI</button></div><div class="card-b">${brainNote}
+    const brainNote = view.config.brain === 'n8n' && firm()?.is_default !== false ? `<div class="notice info small mb16"><b>n8n is the brain.</b> AI replies and the 13-day journey run in your n8n workflows and are streamed into this inbox. Take-over / hand-back and status changes here are written to the sheet, which n8n obeys. The AI and outreach settings below only apply if you ever switch the brain to LeadDesk (BRAIN env var).</div>` : '';
+    if (view.tab === 'ai') p.innerHTML = `${firmNote()}<form id="sform"><div class="card"><div class="card-h"><h2>AI concierge</h2><button class="btn sm" data-act="ai-test" type="button">Test the AI</button></div><div class="card-b">${brainNote}
         <div class="notice ${view.config.ai.apiKeySet || view.config.ai.provider === 'mock' ? 'ok' : 'warn'} small mb16">${view.config.ai.provider === 'mock' ? 'Running in <b>mock</b> mode (no real AI calls).' : view.config.ai.apiKeySet ? `Connected to ${esc(view.config.ai.provider)}.` : 'No AI key configured — set <code class="inline">OPENROUTER_API_KEY</code> in the environment.'}</div>
         <div class="form-grid">
           <div>${field('ai_enabled', 'AI replies enabled', { type: 'checkbox' })}${field('auto_handoff', 'Automatically hand over to sales when a lead qualifies or asks for a person', { type: 'checkbox' })}${field('mark_read', 'Show blue ticks (mark inbound messages as read)', { type: 'checkbox' })}</div>
@@ -35,7 +40,9 @@ export async function renderSettings(el, route) {
           ${field('ai_temperature', 'Creativity (temperature 0–1)', { type: 'number', step: '0.1' })}
           ${field('ai_history_messages', 'Messages of history the AI sees', { type: 'number' })}
           ${field('ai_fallback_reply', 'Fallback reply if the AI fails', { help: 'Sent instead of an AI reply when the AI provider errors; the chat is then handed to a human.' })}
-          <div class="full">${field('ai_system_prompt', 'Knowledge & instructions (system prompt)', { rows: 22, help: 'Everything the AI knows about Neopolis Infra and how it should behave. Edit freely — changes apply to the next message.' })}</div>
+          ${field('company_name', 'Business name', { help: 'Used in hand-off replies ("a … consultant will connect with you") and alerts.' })}
+          ${field('ai_qualify_rule', 'A lead is qualified when…', { help: 'Completes "qualified: true if …". The AI flags the lead for sales when this is met.' })}
+          <div class="full">${field('ai_system_prompt', 'Knowledge & instructions (system prompt)', { rows: 22, help: `Everything the AI knows about ${esc(S().company_name || 'the business')} and how it should behave. Edit freely — changes apply to the next message.` })}</div>
         </div>${saveBar()}</div></div></form>`;
     else if (view.tab === 'outreach') {
       let fs = null, tplStatus = {}; try { fs = (await api('/system')).followups; } catch { /* ignore */ }
@@ -49,7 +56,7 @@ export async function renderSettings(el, route) {
           <textarea data-j="text" ${ro}>${esc(st.text)}</textarea>
           <div class="row mt8"><span class="muted small">Quick-reply buttons (comma separated, max 3)</span><input type="text" data-j="buttons" value="${esc((st.buttons || []).join(', '))}" ${ro}></div>
         </div>`;
-      p.innerHTML = `<form id="sform">${brainNote}<div class="card mb16"><div class="card-h"><h2>Automated outreach</h2><div class="row"><button class="btn sm" data-act="preview-due" type="button">Who is due now?</button><button class="btn sm" data-act="run-followups" type="button">Run now</button></div></div><div class="card-b">
+      p.innerHTML = `${firmNote()}<form id="sform">${brainNote}<div class="card mb16"><div class="card-h"><h2>Automated outreach</h2><div class="row"><button class="btn sm" data-act="preview-due" type="button">Who is due now?</button><button class="btn sm" data-act="run-followups" type="button">Run now</button></div></div><div class="card-b">
         <div class="notice ${S().reply_mode === 'live' ? 'ok' : S().reply_mode === 'test' ? 'warn' : 'info'} small mb8"><b>Reply mode: ${esc(String(S().reply_mode || 'test').toUpperCase())}.</b> ${S().reply_mode === 'off' ? 'The AI will NOT reply to anyone who messages you.' : S().reply_mode === 'test' ? 'The AI only replies to the test numbers below — real customers get no reply.' : 'The AI replies to everyone who messages you.'}</div>
         <div class="notice ${S().send_mode === 'live' ? 'ok' : S().send_mode === 'test' ? 'warn' : 'info'} small mb16"><b>Send mode: ${esc(S().send_mode.toUpperCase())}.</b> ${S().send_mode === 'off' ? 'Nothing is sent to leads. Journey steps are computed but held.' : S().send_mode === 'test' ? 'Only the test numbers below receive templates.' : 'Every due lead receives the next journey step automatically.'}${fs ? ` &nbsp;·&nbsp; ${fs.due} lead(s) due now${fs.inWindow ? '' : ' (outside send window)'}${fs.lastRun ? ` · last run ${ago(fs.lastRun.at)}: ${fs.lastRun.sent} sent, ${fs.lastRun.failed} failed` : ''}${fs.lastRun?.awaitingApproval?.length ? ` · <b>waiting for Meta to approve ${esc(fs.lastRun.awaitingApproval.join(', '))}</b>` : ''}${fs.held?.delivery ? ` · ${fs.held.delivery} waiting for WhatsApp to confirm delivery` : ''}${fs.held?.retry ? ` · ${fs.held.retry} undelivered, re-sending later` : ''}` : ''}</div>
         <div class="form-grid">
@@ -68,7 +75,8 @@ export async function renderSettings(el, route) {
         ${saveBar()}</div></div></form>`;
     }
     else if (view.tab === 'whatsapp') { p.innerHTML = `<div class="muted">Loading WhatsApp status…</div>`; await drawWhatsApp(p); }
-    else if (view.tab === 'sheet') { await drawSheet(p); }
+    else if (view.tab === 'sheet') { await drawSheet(p); p.insertAdjacentHTML('afterbegin', firmNote()); }
+    else if (view.tab === 'firms') { await drawFirms(p); }
     else if (view.tab === 'team') { await drawTeam(p); }
     else if (view.tab === 'account') p.innerHTML = `<div class="card"><div class="card-h"><h2>My account</h2></div><div class="card-b"><div class="kv mb16"><div class="k">Name</div><div>${esc(state.user.name)}</div><div class="k">Email</div><div>${esc(state.user.email)}</div><div class="k">Role</div><div style="text-transform:capitalize">${esc(state.user.role)}</div></div>
         <h3 class="mb8">Change password</h3><form id="pwform" class="form-grid"><div class="field-row"><label class="field">Current password</label><input type="password" name="current" required autocomplete="current-password"></div><div class="field-row"><label class="field">New password</label><input type="password" name="password" required minlength="8" autocomplete="new-password"></div><div class="full"><button class="btn primary" type="submit">Update password</button></div></form>
@@ -78,43 +86,54 @@ export async function renderSettings(el, route) {
   async function drawWhatsApp(p) {
     const c = view.config; let st = null;
     try { st = await api('/wa/status'); } catch (e) { st = { error: e.message }; }
+    const f = st.firm || firm() || {};
+    const main = f.is_default !== false;
     const ok = (o) => o && !o.error;
     const phone = ok(st.phone) ? st.phone : null;
     const numbers = ok(st.numbers) ? (st.numbers.data || []) : [];
     const templates = ok(st.templates) ? (st.templates.data || []) : [];
     const webhookUrl = c.publicUrl ? `${c.publicUrl}/webhook` : '(set PUBLIC_URL to your app URL)';
     const line = (label, good, text) => `<div class="status-line"><span class="lbl2">${label}</span><span class="dot ${good === true ? 'g' : good === false ? 'r' : 'a'}"></span><span>${text}</span></div>`;
-    p.innerHTML = `<div class="card mb16"><div class="card-h"><h2>Connection</h2><button class="btn sm" data-act="wa-refresh">Refresh</button></div><div class="card-b">
+    const national = String(f.display_number || '').replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '');
+    const senderText = phone
+      ? `${esc(phone.display_phone_number)} · ${esc(phone.verified_name)} · ${esc(phone.code_verification_status || '')} · quality ${esc(phone.quality_rating || '?')}${phone.messaging_limit_tier ? ` · ${esc(phone.messaging_limit_tier)}` : ''}`
+      : f.phone_number_id ? `error: ${esc(st.phone?.error || '')}`
+      : main ? 'PHONE_NUMBER_ID not set'
+      : `${esc(f.display_number || 'This firm’s number')} is not registered yet — use the wizard below`;
+    const useBtn = (n) => !main && n.id !== f.phone_number_id ? `<button class="btn xs" data-act="wa-link" data-pid="${esc(n.id)}">Use for ${esc(f.name)}</button>` : (n.id === f.phone_number_id ? `<span class="pill ok">${esc(f.name)}</span>` : '');
+    p.innerHTML = `${firmNote()}<div class="card mb16"><div class="card-h"><h2>Connection${state.firms.length > 1 ? ` — ${esc(f.name || '')}` : ''}</h2><button class="btn sm" data-act="wa-refresh">Refresh</button></div><div class="card-b">
         ${c.whatsapp.mock ? `<div class="notice warn small mb8">Mock mode — no real WhatsApp calls (WA_MOCK=1).</div>` : ''}
+        ${!main && !f.phone_number_id && st.match ? `<div class="notice warn small mb8"><b>${esc(st.match.display_phone_number)}</b> is already on the WhatsApp Business Account. <button class="btn xs primary" data-act="wa-link" data-pid="${esc(st.match.id)}">Use it for ${esc(f.name)}</button></div>` : ''}
         ${line('Access token', c.whatsapp.tokenSet ? (ok(st.token) ? true : false) : false, c.whatsapp.tokenSet ? (ok(st.token) ? `valid (${esc(st.token.name || st.token.id || 'ok')})` : `invalid: ${esc(st.token?.error || '')}`) : 'WHATSAPP_TOKEN not set')}
-        ${line('Sender number', phone ? (phone.status === 'CONNECTED' || phone.code_verification_status === 'VERIFIED' ? true : null) : false, phone ? `${esc(phone.display_phone_number)} · ${esc(phone.verified_name)} · ${esc(phone.code_verification_status || '')} · quality ${esc(phone.quality_rating || '?')}${phone.messaging_limit_tier ? ` · ${esc(phone.messaging_limit_tier)}` : ''}` : c.whatsapp.phoneNumberId ? `error: ${esc(st.phone?.error || '')}` : 'PHONE_NUMBER_ID not set')}
-        ${line('Business account', !!c.whatsapp.wabaId, c.whatsapp.wabaId ? `WABA ${esc(c.whatsapp.wabaId)} · ${numbers.length} number(s)` : 'WABA_ID not set')}
+        ${line('Sender number', phone ? (phone.status === 'CONNECTED' || phone.code_verification_status === 'VERIFIED' ? true : null) : false, senderText)}
+        ${line('Business account', !!f.waba_id || !!c.whatsapp.wabaId, (f.waba_id || c.whatsapp.wabaId) ? `WABA ${esc(f.waba_id || c.whatsapp.wabaId)} · ${numbers.length} number(s)` : 'WABA_ID not set')}
         ${line('App webhook', st.webhook?.data ? true : (c.whatsapp.appSecretSet ? null : false), st.webhook?.data ? `subscribed: ${esc((st.webhook.data[0]?.callback_url) || 'yes')}` : c.whatsapp.appSecretSet ? esc(st.webhook?.error || 'not subscribed yet') : 'META_APP_ID / META_APP_SECRET not set — configure the webhook manually in Meta')}
         ${line('WABA subscription', ok(st.subscribedApps) ? ((st.subscribedApps.data || []).length ? true : false) : null, ok(st.subscribedApps) ? ((st.subscribedApps.data || []).length ? 'app subscribed to this business account' : 'not subscribed — click "Subscribe app"') : esc(st.subscribedApps?.error || '—'))}
+        ${!main ? `<div class="help mt8">Messages to ${esc(f.name)}’s number arrive through the same webhook and land in ${esc(f.name)}’s inbox; replies and journey messages go out from that number only.</div>` : ''}
       </div></div>
       <div class="grid c2 mb16">
         <div class="card"><div class="card-h"><h2>Webhook (paste in Meta)</h2></div><div class="card-b">
           <div class="field-row"><label class="field">Callback URL</label><input type="text" readonly value="${esc(webhookUrl)}"></div>
           <div class="field-row"><label class="field">Verify token</label><input type="text" readonly value="${esc(c.whatsapp.verifyToken)}"></div>
-          <div class="help">Meta app → WhatsApp → Configuration → Webhook → Edit: paste both, then subscribe to the <b>messages</b> field.</div>
+          <div class="help">Meta app → WhatsApp → Configuration → Webhook → Edit: paste both, then subscribe to the <b>messages</b> field. One webhook serves every firm.</div>
           <div class="row mt8"><button class="btn sm" data-act="wa-configure-webhook" ${c.whatsapp.appSecretSet && c.publicUrl ? '' : 'disabled'}>Configure automatically</button><button class="btn sm" data-act="wa-subscribe">Subscribe app to WABA</button></div>
         </div></div>
         <div class="card"><div class="card-h"><h2>Send a test</h2></div><div class="card-b">
           <div class="field-row"><label class="field">To (E.164)</label><input type="text" id="t-to" placeholder="+919000000001"></div>
-          <div class="field-row"><label class="field">Message</label><input type="text" id="t-text" value="Test message from Neopolis LeadDesk"></div>
+          <div class="field-row"><label class="field">Message</label><input type="text" id="t-text" value="Test message from ${esc(view.settings.company_name || 'LeadDesk')}"></div>
           <div class="row"><button class="btn sm primary" data-act="wa-send-test">Send text</button><select id="t-tpl" style="width:auto"><option value="">or a template…</option>${templates.map(t => `<option value="${esc(t.name)}">${esc(t.name)} (${esc(t.status)})</option>`).join('')}</select><button class="btn sm" data-act="wa-send-template">Send template</button></div>
-          <div class="help">Free text only reaches numbers that messaged you in the last 24h; templates reach anyone.</div>
+          <div class="help">Free text only reaches numbers that messaged you in the last 24h; templates reach anyone.${main ? '' : ` Sent from ${esc(f.name)}’s number.`}</div>
         </div></div>
       </div>
       <div class="grid c2">
         <div class="card"><div class="card-h"><h2>Numbers on this account</h2></div><div class="card-b">
-          ${numbers.length ? `<table class="tbl">${numbers.map(n => `<tr><td><b>${esc(n.display_phone_number)}</b><div class="small muted">${esc(n.verified_name)} · id ${esc(n.id)}</div></td><td class="small">${esc(n.code_verification_status || '')}<br>${esc(n.status || '')}</td></tr>`).join('')}</table>` : `<div class="small muted">${esc(st.numbers?.error || 'No numbers yet.')}</div>`}
-          <details class="mt8"><summary class="small" style="cursor:pointer">Register a new number (wizard)</summary>
+          ${numbers.length ? `<table class="tbl">${numbers.map(n => `<tr><td><b>${esc(n.display_phone_number)}</b><div class="small muted">${esc(n.verified_name)} · id ${esc(n.id)}</div></td><td class="small">${esc(n.code_verification_status || '')}<br>${esc(n.status || '')}</td><td class="right">${useBtn(n)}</td></tr>`).join('')}</table>` : `<div class="small muted">${esc(st.numbers?.error || 'No numbers yet.')}</div>`}
+          <details class="mt8" ${!main && !f.phone_number_id ? 'open' : ''}><summary class="small" style="cursor:pointer">Register ${main ? 'a new number' : `${esc(f.name)}’s number`} (wizard)</summary>
             <div class="stack mt8">
-              <div class="row"><input type="text" id="r-num" placeholder="10-digit number, e.g. 9876543210"><input type="text" id="r-name" placeholder="Display name" value="Neopolis Infra" style="width:180px"><button class="btn sm" data-act="wa-add">1. Add</button></div>
-              <div class="row"><input type="text" id="r-pid" placeholder="phone_number_id (from step 1 or the list above)"><button class="btn sm" data-act="wa-code">2. Send SMS code</button></div>
+              <div class="row"><input type="text" id="r-num" placeholder="10-digit number, e.g. 9876543210" value="${esc(main ? '' : national)}"><input type="text" id="r-name" placeholder="Display name" value="${esc(main ? (view.settings.company_name || '') : f.name || '')}" style="width:180px"><button class="btn sm" data-act="wa-add">1. Add</button></div>
+              <div class="row"><input type="text" id="r-pid" placeholder="phone_number_id (from step 1 or the list above)" value="${esc(main ? '' : f.phone_number_id || '')}"><button class="btn sm" data-act="wa-code">2. Send SMS code</button></div>
               <div class="row"><input type="text" id="r-code" placeholder="6-digit code from SMS" style="width:160px"><button class="btn sm" data-act="wa-verify">3. Verify</button><input type="text" id="r-pin" placeholder="new 6-digit PIN" style="width:150px"><button class="btn sm" data-act="wa-register">4. Register</button></div>
-              <div class="help">The number must not be active on the WhatsApp app any more (delete the account in the app first). After step 4, set <code class="inline">PHONE_NUMBER_ID</code> to the new id and redeploy.</div>
+              <div class="help">The number must not be active on the WhatsApp app any more (delete the account in the app first). The SMS code goes to that phone. ${main ? 'After step 4, set <code class="inline">PHONE_NUMBER_ID</code> to the new id and redeploy.' : `Step 1 links the number to <b>${esc(f.name)}</b> straight away; after step 4 it can send. Keep the PIN safe — Meta asks for it when the number is re-registered.`}</div>
             </div></details>
         </div></div>
         <div class="card"><div class="card-h"><h2>Message templates in Meta</h2></div><div class="card-b">
@@ -178,6 +197,18 @@ export async function renderSettings(el, route) {
     p.innerHTML = statusCard + syncForm + connectCard;
   }
 
+  async function drawFirms(p) {
+    let firms = []; try { firms = (await api('/firms')).firms; } catch (e) { toast(e.message, 'error'); }
+    const admin = isAdmin();
+    const sender = (f) => f.phone_source === 'none' ? '<span class="pill warn">not registered</span>' : `<span class="pill ok">connected</span><div class="tiny faint">id ${esc(f.phone_number_id)}${f.phone_source === 'env' ? ' (PHONE_NUMBER_ID)' : ''}</div>`;
+    p.innerHTML = `<div class="card mb16"><div class="card-h"><h2>Firms</h2>${admin ? `<button class="btn sm primary" data-act="firm-add">+ Add firm</button>` : ''}</div>
+      <table class="tbl"><thead><tr><th>Firm</th><th>WhatsApp number</th><th>Sender</th><th>Status</th>${admin ? '<th></th>' : ''}</tr></thead><tbody>
+      ${firms.map(f => `<tr data-fid="${f.id}"><td><b>${esc(f.name)}</b>${f.is_default ? ' <span class="pill">main</span>' : ''}<div class="tiny faint">${esc(f.slug)}</div></td><td>${esc(f.display_number || '—')}</td><td class="small">${sender(f)}</td><td>${f.active ? '<span class="pill ok">active</span>' : '<span class="pill bad">off</span>'}</td>
+        ${admin ? `<td class="right"><button class="btn xs" data-act="firm-edit">Edit</button>${f.is_default ? '' : ` <button class="btn xs ${f.active ? 'danger' : 'success'}" data-act="firm-toggle">${f.active ? 'Switch off' : 'Switch on'}</button>`}</td>` : ''}</tr>`).join('')}</tbody></table>
+      <div class="card-b help">Each firm has its own WhatsApp number, Google Sheet, AI knowledge, journey messages and send / reply modes; the team, the AI model and the webhook are shared. Pick the firm to work on with the selector at the top left. A new firm starts with sending <b>off</b> and replies in <b>test</b> mode, so nothing reaches its contacts until you switch it on under Outreach.</div></div>`;
+    view.firms = firms;
+  }
+
   async function drawTeam(p) {
     let users = []; try { users = (await api('/users')).users; } catch (e) { toast(e.message, 'error'); }
     const admin = isAdmin();
@@ -216,7 +247,7 @@ export async function renderSettings(el, route) {
       switch (act) {
         case 'save': return save();
         case 'ai-test': { toast('Asking the AI…'); const r = await api('/ai/test', { method: 'POST' }); return showResult('AI test reply', r.result); }
-        case 'preview-due': { const r = await api('/system'); const f = r.followups; return modal({ title: `Due now: ${f.due} lead(s)`, body: f.dueList.length ? `<div class="help mb8">Mode ${esc(f.sendMode)} · ${f.inWindow ? 'inside' : 'outside'} send window. "Allowed" = would actually be sent in the current mode.</div><table class="tbl">${f.dueList.map(d => `<tr><td>${esc(d.name || d.wa_number)}<div class="small muted">${esc(d.wa_number)}</div></td><td>Day ${[0, 2, 5][d.stage]} · ${esc(d.template)}</td><td>${d.allowed ? '<span class="pill ok">allowed</span>' : '<span class="pill">held</span>'}</td></tr>`).join('')}</table>` : '<div class="empty">Nobody is due right now.</div>', footer: `<button class="btn" data-close>Close</button>` }); }
+        case 'preview-due': { const r = await api('/system'); const f = r.followups; return modal({ title: `Due now: ${f.due} lead(s)`, body: f.dueList.length ? `<div class="help mb8">Mode ${esc(f.sendMode)} · ${f.inWindow ? 'inside' : 'outside'} send window. "Allowed" = would actually be sent in the current mode.</div><table class="tbl">${f.dueList.map(d => `<tr><td>${esc(d.name || d.wa_number)}<div class="small muted">${esc(d.wa_number)}</div></td><td>Day ${esc(String(d.day))} · ${esc(d.template)}</td><td>${d.allowed ? '<span class="pill ok">allowed</span>' : '<span class="pill">held</span>'}</td></tr>`).join('')}</table>` : '<div class="empty">Nobody is due right now.</div>', footer: `<button class="btn" data-close>Close</button>` }); }
         case 'run-followups': { if (!(await confirmDialog('Run follow-ups now?', `Send mode is ${S().send_mode.toUpperCase()}. Due leads that are allowed in this mode will receive their next template immediately (inside the send window).`, { okLabel: 'Run now' }))) return; const r = await api('/followups/run', { method: 'POST' }); return showResult('Follow-up run', r.result); }
         case 'sheet-test': { const r = await api('/sheet/test', { method: 'POST' }); return showResult('Sheet connection', r.result); }
         case 'sheet-import': { const r = await api('/sheet/import', { method: 'POST' }); toast(`Imported: +${r.result.created} new, ${r.result.updated} updated, ${r.result.invalid} invalid`, 'success'); return drawPanel(); }
@@ -245,8 +276,8 @@ export async function renderSettings(el, route) {
           return drawPanel();
         }
         case 'sheet-disconnect': { if (!(await confirmDialog('Disconnect the sheet?', 'LeadDesk will stop importing from and writing to this sheet. Existing leads stay in LeadDesk.', { okLabel: 'Disconnect' }))) return; await api('/sheet/disconnect', { method: 'POST' }); view.sheetMethod = null; toast('Sheet disconnected', 'success'); return drawPanel(); }
-        case 'j-defaults': { if (!(await confirmDialog('Load the recommended messages?', 'Replaces every journey step in the editor with the recommended six-step journey (new template names). Nothing is saved until you click Save or Submit templates to Meta; each step then waits until Meta approves its template.', { okLabel: 'Load' }))) return; view.settings.journey_steps = view.defaults.journey_steps; return drawPanel(); }
-        case 'j-add': { const st = collectJourney(); st.push({ day: (st.length ? Math.max(...st.map(x => x.day)) + 3 : 0), template: `neopolis_journey_step${st.length + 1}`, text: 'Hello {{1}}, ', buttons: [] }); view.settings.journey_steps = JSON.stringify(st); return drawPanel(); }
+        case 'j-defaults': { if (!(await confirmDialog('Load the recommended messages?', 'Replaces every journey step in the editor with the recommended journey (new template names). Nothing is saved until you click Save or Submit templates to Meta; each step then waits until Meta approves its template.', { okLabel: 'Load' }))) return; view.settings.journey_steps = view.defaults.journey_steps; return drawPanel(); }
+        case 'j-add': { const st = collectJourney(); const prefix = firm()?.is_default === false ? String(firm().slug).replace(/[^a-z0-9]+/g, '_') : 'neopolis'; st.push({ day: (st.length ? Math.max(...st.map(x => x.day)) + 3 : 0), template: `${prefix}_journey_step${st.length + 1}`, text: 'Hello {{1}}, ', buttons: [] }); view.settings.journey_steps = JSON.stringify(st); return drawPanel(); }
         case 'j-remove': { const i = Number(bg.closest('[data-step]').dataset.step); const st = collectJourney(); st.splice(i, 1); view.settings.journey_steps = JSON.stringify(st); return drawPanel(); }
         case 'submit-templates': { await save(); if (!(await confirmDialog('Submit templates to Meta?', 'Every journey step will be created as a MARKETING template on your WhatsApp Business Account and sent for approval. Steps that already exist in Meta are skipped. Template names cannot be reused for 30 days after deletion, so review the text first.', { okLabel: 'Submit to Meta' }))) return; const r = await api('/wa/submit-templates', { method: 'POST' }); showResult('Template submission', r.results); return drawPanel(); }
         case 'wa-refresh': return drawPanel();
@@ -254,10 +285,16 @@ export async function renderSettings(el, route) {
         case 'wa-subscribe': { const r = await api('/wa/subscribe', { method: 'POST' }); toast('App subscribed to the business account', 'success'); return showResult('Subscribe', r.result); }
         case 'wa-send-test': { const r = await api('/wa/send-test', { method: 'POST', body: { to: val('#t-to'), text: val('#t-text') } }); toast(`Sent (status ${r.message.status})`, 'success'); return; }
         case 'wa-send-template': { const tpl = val('#t-tpl'); if (!tpl) return toast('Pick a template first', 'error'); const r = await api('/wa/send-test', { method: 'POST', body: { to: val('#t-to'), template: tpl } }); toast(`Template sent (status ${r.message.status})`, 'success'); return; }
-        case 'wa-add': { const r = await api('/wa/add-number', { method: 'POST', body: { phone_number: val('#r-num'), verified_name: val('#r-name') } }); if (r.result?.id) $('#r-pid').value = r.result.id; return showResult('Add number', r.result); }
+        case 'wa-add': { const r = await api('/wa/add-number', { method: 'POST', body: { phone_number: val('#r-num'), verified_name: val('#r-name') } }); if (r.result?.id) $('#r-pid').value = r.result.id; if (r.linked) { toast(`Number added and linked to ${r.firm.name} — now send the SMS code (step 2)`, 'success'); window.dispatchEvent(new Event('ld:firms-changed')); } return showResult('Add number', r.result); }
+        case 'wa-link': { if (!(await confirmDialog(`Use this number for ${firm()?.name}?`, `${firm()?.name}'s replies and journey messages will go out from this number, and messages to it will land in ${firm()?.name}'s inbox.`, { okLabel: 'Use this number' }))) return; await api('/wa/link-number', { method: 'POST', body: { phone_number_id: bg.dataset.pid } }); toast('Number linked', 'success'); window.dispatchEvent(new Event('ld:firms-changed')); return; }
         case 'wa-code': { const r = await api('/wa/request-code', { method: 'POST', body: { phone_number_id: val('#r-pid') } }); toast('SMS code requested', 'success'); return showResult('Request code', r.result); }
         case 'wa-verify': { const r = await api('/wa/verify-code', { method: 'POST', body: { phone_number_id: val('#r-pid'), code: val('#r-code') } }); toast('Number verified', 'success'); return showResult('Verify', r.result); }
-        case 'wa-register': { const r = await api('/wa/register', { method: 'POST', body: { phone_number_id: val('#r-pid'), pin: val('#r-pin') } }); toast('Number registered for the Cloud API', 'success'); return showResult('Register', r.result); }
+        case 'wa-register': { const r = await api('/wa/register', { method: 'POST', body: { phone_number_id: val('#r-pid'), pin: val('#r-pin') } }); toast(`Number registered for the Cloud API${r.linked ? ` and linked to ${r.firm.name}` : ''}`, 'success'); if (r.linked) window.dispatchEvent(new Event('ld:firms-changed')); return showResult('Register', r.result); }
+        case 'firm-add': return modal({ title: 'Add a firm', body: `<div class="field-row"><label class="field">Firm name</label><input type="text" id="f-name" placeholder="e.g. MoreSpace"></div><div class="field-row"><label class="field">WhatsApp business number</label><input type="text" id="f-num" placeholder="10-digit number, e.g. 7075168306"></div><div class="field-row"><label class="field">Google Sheet link <span class="muted">(optional)</span></label><input type="text" id="f-sheet" placeholder="https://docs.google.com/spreadsheets/d/…/edit"></div><div class="help">The sheet needs a name column and a number column (e.g. <b>Name</b> / <b>Number</b>) and must be shared as “Anyone with the link → Viewer”; leads are imported from it, nothing is written back. Register the number afterwards under Settings → WhatsApp with this firm selected.</div>`,
+          footer: `<button class="btn" data-close>Cancel</button><button class="btn primary" data-ok>Add firm</button>`, onOpen: (b, close) => { b.querySelector('[data-ok]').onclick = async () => { try { const r = await api('/firms', { method: 'POST', body: { name: b.querySelector('#f-name').value, display_number: b.querySelector('#f-num').value, sheet_url: b.querySelector('#f-sheet').value.trim() } }); toast(`${r.firm.name} added — select it at the top left to set it up`, 'success'); close(); window.dispatchEvent(new Event('ld:firms-changed')); } catch (e) { toast(e.message, 'error'); } }; } });
+        case 'firm-edit': { const f = view.firms.find(x => x.id === Number(bg.closest('[data-fid]').dataset.fid)); if (!f) return; return modal({ title: `Edit ${f.name}`, body: `<div class="field-row"><label class="field">Firm name</label><input type="text" id="f-name" value="${esc(f.name)}"></div><div class="field-row"><label class="field">WhatsApp business number</label><input type="text" id="f-num" value="${esc(f.display_number)}"></div>${f.is_default ? '<div class="help">The main firm sends from PHONE_NUMBER_ID (a Railway variable).</div>' : `<div class="field-row"><label class="field">Meta phone_number_id <span class="muted">(set by the wizard)</span></label><input type="text" id="f-pid" value="${esc(f.phone_source === 'firm' ? f.phone_number_id : '')}"></div>`}`,
+          footer: `<button class="btn" data-close>Cancel</button><button class="btn primary" data-ok>Save</button>`, onOpen: (b, close) => { b.querySelector('[data-ok]').onclick = async () => { try { const body = { name: b.querySelector('#f-name').value, display_number: b.querySelector('#f-num').value }; if (!f.is_default) body.phone_number_id = b.querySelector('#f-pid').value.trim(); await api(`/firms/${f.id}`, { method: 'PATCH', body }); toast('Firm saved', 'success'); close(); window.dispatchEvent(new Event('ld:firms-changed')); } catch (e) { toast(e.message, 'error'); } }; } }); }
+        case 'firm-toggle': { const f = view.firms.find(x => x.id === Number(bg.closest('[data-fid]').dataset.fid)); if (!f) return; if (f.active && !(await confirmDialog(`Switch ${f.name} off?`, 'Its sheet stops importing and no journey messages go out. Its chats and leads stay; messages to its number still arrive.', { okLabel: 'Switch off', danger: true }))) return; await api(`/firms/${f.id}`, { method: 'PATCH', body: { active: !f.active } }); window.dispatchEvent(new Event('ld:firms-changed')); return; }
         case 'notify': { const p = await Notification.requestPermission(); toast(p === 'granted' ? 'Notifications enabled' : 'Notifications not allowed', p === 'granted' ? 'success' : 'error'); return; }
         case 'user-add': return modal({ title: 'Add a team member', body: `<div class="field-row"><label class="field">Name</label><input type="text" id="u-name"></div><div class="field-row"><label class="field">Email</label><input type="email" id="u-email"></div><div class="field-row"><label class="field">WhatsApp number <span class="muted">(optional)</span></label><input type="text" id="u-wa" placeholder="+91 98765 43210"></div><div class="field-row"><label class="field">Temporary password</label><input type="text" id="u-pw" value="${Math.random().toString(36).slice(2, 10)}${Math.random().toString(36).slice(2, 6)}"></div><div class="field-row"><label class="field">Role</label><select id="u-role"><option value="agent">Sales agent</option><option value="admin">Admin</option><option value="viewer">Viewer</option></select></div><div class="help">Share the password with them privately; they can change it under My account.</div>`,
           footer: `<button class="btn" data-close>Cancel</button><button class="btn primary" data-ok>Create</button>`, onOpen: (b, close) => { b.querySelector('[data-ok]').onclick = async () => { try { await api('/users', { method: 'POST', body: { name: b.querySelector('#u-name').value, email: b.querySelector('#u-email').value, wa_number: b.querySelector('#u-wa').value, password: b.querySelector('#u-pw').value, role: b.querySelector('#u-role').value } }); toast('Member added', 'success'); close(); state.users = (await api('/users')).users; drawPanel(); } catch (e) { toast(e.message, 'error'); } }; } });

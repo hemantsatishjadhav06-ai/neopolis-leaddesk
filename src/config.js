@@ -48,6 +48,9 @@ export const config = {
   brain: (env.BRAIN || 'leaddesk').toLowerCase() === 'n8n' ? 'n8n' : 'leaddesk',
   ingestSecret: env.INGEST_SECRET || '',
 
+  // Extra firms to create at boot (JSON list of {name, number, sheet}); see services/firm-setup.js.
+  firmsSeed: env.FIRMS || '',
+
   sheets: {
     provider: env.SHEETS_PROVIDER || (env.N8N_BRIDGE_URL ? 'n8n' : env.SHEETS_APPS_SCRIPT_URL ? 'appsscript' : env.GOOGLE_SERVICE_ACCOUNT_B64 ? 'serviceaccount' : 'none'),
     n8nBridgeUrl: env.N8N_BRIDGE_URL || '',
