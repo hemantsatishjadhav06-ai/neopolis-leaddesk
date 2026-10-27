@@ -1,10 +1,11 @@
 // Google Sheet ⇄ LeadDesk sync: import new leads from the sheet; push status/replies back (queued).
 import { all, get, run, nowIso, kvGet, kvSet } from '../db.js';
 import { getSetting } from '../settings.js';
+import { currentFirmId, firmKey } from '../firms.js';
 import { normalizePhone, normHeader, prettyAnswer, firstName } from '../util/normalize.js';
 import { getSheetProvider } from './sheets/index.js';
 import { activeSheetConfig, configuredLeadTabs } from './sheets/active.js';
-import { getLeadByNumber, createLead, updateLead, STATUSES, audit } from './leads.js';
+import { getLeadByNumber, createLead, updateLead, STATUSES, audit, firmTag } from './leads.js';
 import { broadcast } from './events.js';
 import { log } from '../logger.js';
 
@@ -17,7 +18,10 @@ const FIELD_RULES = [
   { field: 'budget', test: h => /budget|down_pa|price_range|payment/.test(h) },
   { field: 'objective', test: h => /objective|purpose|reason/.test(h) },
 ];
-const SKIP_RAW = /^(id|created_time|ad_id|adset_id|campaign_id|form_id|is_organic|whatsapp_number|phone_number|full_name|email|lead_status|last_reply)$/;
+// Column names that hold the WhatsApp number, in order of preference: ad-form exports use whatsapp_number /
+// phone_number; a hand-made bulk-message list usually just says Number or Mobile.
+const PHONE_HEADERS = ['whatsapp_number', 'phone_number', 'phone', 'mobile', 'whatsapp', 'number', 'mobile_number', 'contact_number', 'whatsapp_no', 'phone_no', 'mobile_no'];
+const SKIP_RAW = new RegExp(`^(id|created_time|ad_id|adset_id|campaign_id|form_id|is_organic|full_name|name|email|lead_status|last_reply|${PHONE_HEADERS.join('|')})$`);
 
 export function mapRow(headers, values) {
   const normed = headers.map(normHeader);
@@ -32,7 +36,7 @@ export function mapRow(headers, values) {
     if (!SKIP_RAW.test(h)) raw[headers[i].trim()] = String(v);
   });
   return {
-    wa_number: byKey.whatsapp_number || byKey.phone_number || byKey.phone || byKey.mobile || '',
+    wa_number: PHONE_HEADERS.map(h => byKey[h]).find(v => String(v ?? '').trim()) || '',
     full_name: byKey.full_name || byKey.name || '',
     email: byKey.email || '',
     lead_status: byKey.lead_status || '',
@@ -40,7 +44,6 @@ export function mapRow(headers, values) {
   };
 }
 
-const PHONE_HEADERS = ['whatsapp_number', 'phone_number', 'phone', 'mobile'];
 const hasPhoneColumn = (headers) => headers.map(normHeader).some(h => PHONE_HEADERS.includes(h));
 
 // A tab that looks like a lead-form export: a phone column, a name, and created_time or lead_status.
@@ -52,8 +55,13 @@ export function isLeadTable(t, repliesTab = 'Client Replies') {
   return hasPhoneColumn(t.headers || []) && (h.includes('full_name') || h.includes('name')) && (h.includes('created_time') || h.includes('lead_status'));
 }
 
+// A plain contact list (Name / Number, as typed for a bulk message): a phone column and a name, nothing else needed.
+const isContactList = (t, repliesTab) => !!t && normHeader(t.tab) !== normHeader(repliesTab) && !(t.headers || []).map(normHeader).includes('ai_reply')
+  && hasPhoneColumn(t.headers || []) && (t.headers || []).map(normHeader).some(h => h === 'name' || h === 'full_name');
+
 // Which of the tables read from the sheet to import: the configured tab(s) as given (each must have a phone
-// column), otherwise every tab that looks like a leads tab.
+// column), otherwise every tab that looks like a leads tab. A sheet with no ad-form tabs at all is a contact
+// list (a bulk-message sheet): then every tab with a name and a number is imported.
 export function pickLeadTables(tables, { configured = [], repliesTab = 'Client Replies' } = {}) {
   if (configured.length) {
     const byName = new Map(tables.map(t => [String(t.tab), t]));
@@ -66,8 +74,10 @@ export function pickLeadTables(tables, { configured = [], repliesTab = 'Client R
   }
   const leads = tables.filter(t => isLeadTable(t, repliesTab));
   if (!leads.length) {
+    const contacts = tables.filter(t => isContactList(t, repliesTab));
+    if (contacts.length) return contacts;
     if (tables.length === 1 && hasPhoneColumn(tables[0].headers || [])) return tables; // single-table connectors
-    throw new Error(`No leads tab found. Checked ${tables.map(t => `"${t.tab}"`).join(', ') || 'no tabs'}; a leads tab needs a whatsapp_number or phone_number column and full_name.`);
+    throw new Error(`No leads tab found. Checked ${tables.map(t => `"${t.tab}"`).join(', ') || 'no tabs'}; a leads tab needs a whatsapp_number, phone_number or Number column and a name.`);
   }
   return leads;
 }
@@ -76,14 +86,14 @@ export function pickLeadTables(tables, { configured = [], repliesTab = 'Client R
 // so the journey never messages someone who already said no on a call.
 const DECLINED_NOTE = /not\s*(?:in?t+e?r?e?s?t?e?d|insterested|insted|intrested|intersted)|\bdnd\b|do\s*not\s*(?:call|disturb|message|contact)/i;
 
-export async function importFromSheet({ userId = null, force = false } = {}) {
-  const provider = getSheetProvider();
+export async function importFromSheet({ userId = null, force = false, firmId = currentFirmId() } = {}) {
+  const provider = getSheetProvider(firmId);
   if (!provider) return { skipped: true, reason: 'No sheet provider configured' };
-  if (!force && !getSetting('sheet_import_enabled')) return { skipped: true, reason: 'Import disabled in settings' };
+  if (!force && !getSetting('sheet_import_enabled', firmId)) return { skipped: true, reason: 'Import disabled in settings' };
   const started = Date.now();
   const tables = provider.readTables ? await provider.readTables() : [await provider.readLeads()];
-  const configured = configuredLeadTabs();
-  const repliesTab = activeSheetConfig().repliesTab;
+  const configured = configuredLeadTabs(firmId);
+  const repliesTab = activeSheetConfig(firmId).repliesTab;
   const picked = pickLeadTables(tables, { configured, repliesTab });
   // Leads tabs the configured list leaves out (e.g. a newer ad form's tab): imported only once someone adds them.
   const missedTabs = configured.length ? tables.filter(t => isLeadTable(t, repliesTab) && !configured.includes(String(t.tab))).map(t => ({ tab: t.tab, rows: t.rows.length })) : [];
@@ -100,10 +110,10 @@ export async function importFromSheet({ userId = null, force = false } = {}) {
       if (!wa) { invalid++; if (invalidRows.length < 20) invalidRows.push({ tab: data.tab, row: r.rowNumber, value: m.wa_number, name: m.full_name }); continue; }
       if (numbers.has(wa)) { duplicates++; continue; }
       numbers.add(wa);
-      const existing = getLeadByNumber(wa);
+      const existing = getLeadByNumber(wa, firmId);
       if (!existing) {
         const st = STATUSES.includes(String(m.lead_status).toUpperCase()) ? String(m.lead_status).toUpperCase() : 'CREATED';
-        const lead = createLead({ wa_number: wa, full_name: m.full_name, email: m.email, source: 'sheet', sheet_row: r.rowNumber, sheet_tab: data.tab, status: st, fields: m.fields, raw_fields: m.raw });
+        const lead = createLead({ firm_id: firmId, wa_number: wa, full_name: m.full_name, email: m.email, source: 'sheet', sheet_row: r.rowNumber, sheet_tab: data.tab, status: st, fields: m.fields, raw_fields: m.raw });
         const note = r.values.find(v => DECLINED_NOTE.test(String(v)));
         if (note) {
           updateLead(lead.id, { outreach_paused: 1 }, { silent: true });
@@ -126,18 +136,18 @@ export async function importFromSheet({ userId = null, force = false } = {}) {
   }
   const tabNames = tabs.map(t => t.tab).join(', ');
   const result = { ok: true, tab: tabNames, tabs, missedTabs, rows: seen, created, updated, invalid, duplicates, paused, invalidRows, ms: Date.now() - started, at: nowIso() };
-  kvSet('sheet.lastImport', result);
-  audit('sheet.import', { userId, data: { created, updated, invalid, rows: seen, tabs: tabNames } });
-  if (created || updated) broadcast('lead', { reason: 'import' });
-  log.info(`Sheet import (${tabNames}): ${seen} rows, +${created} new${paused ? ` (${paused} paused: sheet says not interested)` : ''}, ${updated} updated, ${invalid} invalid${duplicates ? `, ${duplicates} duplicate` : ''}`);
-  if (missedTabs.length) log.warn(`Sheet import: leads tab(s) not imported because Settings → Google Sheet names only "${configured.join(', ')}": ${missedTabs.map(t => `${t.tab} (${t.rows} rows)`).join(', ')}. Clear the tab name to import every leads tab, or add them.`);
+  kvSet(firmKey('sheet.lastImport', firmId), result);
+  audit('sheet.import', { userId, firmId, data: { created, updated, invalid, rows: seen, tabs: tabNames } });
+  if (created || updated) broadcast('lead', { reason: 'import', firm_id: firmId });
+  log.info(`Sheet import${firmTag(firmId)} (${tabNames}): ${seen} rows, +${created} new${paused ? ` (${paused} paused: sheet says not interested)` : ''}, ${updated} updated, ${invalid} invalid${duplicates ? `, ${duplicates} duplicate` : ''}`);
+  if (missedTabs.length) log.warn(`Sheet import${firmTag(firmId)}: leads tab(s) not imported because Settings → Google Sheet names only "${configured.join(', ')}": ${missedTabs.map(t => `${t.tab} (${t.rows} rows)`).join(', ')}. Clear the tab name to import every leads tab, or add them.`);
   return result;
 }
 
-export async function processSheetQueue(max = 25) {
-  const provider = getSheetProvider();
+export async function processSheetQueue(max = 25, firmId = currentFirmId()) {
+  const provider = getSheetProvider(firmId);
   if (!provider) return { processed: 0 };
-  const jobs = all('SELECT * FROM sheet_queue WHERE next_at <= ? ORDER BY id LIMIT ?', nowIso(), max);
+  const jobs = all('SELECT * FROM sheet_queue WHERE firm_id = ? AND next_at <= ? ORDER BY id LIMIT ?', firmId, nowIso(), max);
   let ok = 0, failed = 0;
   for (const j of jobs) {
     const payload = JSON.parse(j.payload);
@@ -148,20 +158,20 @@ export async function processSheetQueue(max = 25) {
     } catch (e) {
       failed++;
       const attempts = j.attempts + 1;
-      if (attempts >= 8) { run('DELETE FROM sheet_queue WHERE id = ?', j.id); log.error(`Sheet op ${j.op} dropped after ${attempts} attempts: ${e.message}`); kvSet('sheet.lastError', { at: nowIso(), error: e.message, op: j.op }); }
-      else { const delayMin = Math.min(60, 2 ** attempts); run('UPDATE sheet_queue SET attempts = ?, next_at = ?, last_error = ? WHERE id = ?', attempts, new Date(Date.now() + delayMin * 60000).toISOString(), e.message, j.id); kvSet('sheet.lastError', { at: nowIso(), error: e.message, op: j.op }); }
+      if (attempts >= 8) { run('DELETE FROM sheet_queue WHERE id = ?', j.id); log.error(`Sheet op ${j.op}${firmTag(firmId)} dropped after ${attempts} attempts: ${e.message}`); kvSet(firmKey('sheet.lastError', firmId), { at: nowIso(), error: e.message, op: j.op }); }
+      else { const delayMin = Math.min(60, 2 ** attempts); run('UPDATE sheet_queue SET attempts = ?, next_at = ?, last_error = ? WHERE id = ?', attempts, new Date(Date.now() + delayMin * 60000).toISOString(), e.message, j.id); kvSet(firmKey('sheet.lastError', firmId), { at: nowIso(), error: e.message, op: j.op }); }
     }
   }
-  if (ok) kvSet('sheet.lastWrite', nowIso());
-  return { processed: ok, failed, pending: get('SELECT COUNT(*) AS n FROM sheet_queue').n };
+  if (ok) kvSet(firmKey('sheet.lastWrite', firmId), nowIso());
+  return { processed: ok, failed, pending: get('SELECT COUNT(*) AS n FROM sheet_queue WHERE firm_id = ?', firmId).n };
 }
 
-export function sheetStatus() {
+export function sheetStatus(firmId = currentFirmId()) {
   return {
-    provider: getSheetProvider()?.name || 'none',
-    lastImport: kvGet('sheet.lastImport'),
-    lastWrite: kvGet('sheet.lastWrite'),
-    lastError: kvGet('sheet.lastError'),
-    pending: get('SELECT COUNT(*) AS n FROM sheet_queue').n,
+    provider: getSheetProvider(firmId)?.name || 'none',
+    lastImport: kvGet(firmKey('sheet.lastImport', firmId)),
+    lastWrite: kvGet(firmKey('sheet.lastWrite', firmId)),
+    lastError: kvGet(firmKey('sheet.lastError', firmId)),
+    pending: get('SELECT COUNT(*) AS n FROM sheet_queue WHERE firm_id = ?', firmId).n,
   };
 }

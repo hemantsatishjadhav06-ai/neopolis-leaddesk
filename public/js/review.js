@@ -1,4 +1,4 @@
-import { api, esc, statusPill, modePill, fmtTime, isWriter, toast, askText, onEvent, debounce } from './core.js';
+import { api, esc, statusPill, modePill, fmtTime, isWriter, toast, askText, onEvent, debounce } from './core.js?v=2';
 
 const TABS = [['unreviewed', 'To review'], ['flagged', 'Flagged'], ['good', 'Approved'], ['all', 'All AI replies']];
 

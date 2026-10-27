@@ -1,4 +1,4 @@
-import { api, esc, state, statusPill, modePill, fmtTime, userName, isWriter, STATUSES, STATUS_LABEL, toast, modal, onEvent, debounce } from './core.js';
+import { api, esc, state, statusPill, modePill, fmtTime, userName, isWriter, STATUSES, STATUS_LABEL, toast, modal, onEvent, debounce } from './core.js?v=2';
 
 export async function renderLeads(el, route) {
   const view = { status: route.tab && STATUSES.includes(route.tab) ? route.tab : '', mode: '', assigned: '', q: '', sort: 'last_message_at', rows: [], total: 0, selected: new Set() };
@@ -11,7 +11,7 @@ export async function renderLeads(el, route) {
         <select id="f-assigned" style="width:160px"><option value="">Anyone</option><option value="none">Unassigned</option>${state.users.map(u => `<option value="${u.id}">${esc(u.name)}</option>`).join('')}</select>
         <select id="f-sort" style="width:150px"><option value="last_message_at">Latest activity</option><option value="created_at">Newest first</option><option value="name">Name</option><option value="status">Status</option></select>
       </div>
-      <div class="row"><a class="btn sm" href="/api/export/leads.csv">Export CSV</a>${isWriter() ? `<button class="btn sm primary" data-act="add">+ Add lead</button>` : ''}</div>
+      <div class="row"><a class="btn sm" href="/api/export/leads.csv?firm=${encodeURIComponent(state.firmId || '')}">Export CSV</a>${isWriter() ? `<button class="btn sm primary" data-act="add">+ Add lead</button>` : ''}</div>
     </div>
     <div id="bulk" class="card-h hidden" style="background:#fffbeb"><div class="row wrap"><b id="selcount"></b><button class="btn sm" data-bulk="takeover">Take over</button><button class="btn sm" data-bulk="handback">Hand back to AI</button><button class="btn sm" data-bulk="pause">Pause follow-ups</button><button class="btn sm" data-bulk="resume">Resume follow-ups</button><select id="bulk-assign" style="width:160px"><option value="">Assign to…</option>${state.users.filter(u => u.active).map(u => `<option value="${u.id}">${esc(u.name)}</option>`).join('')}</select><select id="bulk-status" style="width:160px"><option value="">Set status…</option>${STATUSES.map(s => `<option value="${s}">${STATUS_LABEL[s]}</option>`).join('')}</select></div><button class="btn sm ghost" data-bulk="clear">Clear</button></div>
     <div style="overflow:auto;max-height:calc(100vh - 190px)"><table class="tbl" id="tbl"></table></div>

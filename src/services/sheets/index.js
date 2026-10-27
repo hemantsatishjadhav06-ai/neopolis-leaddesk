@@ -4,24 +4,28 @@ import { createMemoryProvider } from './memory.js';
 import { createN8nBridgeProvider } from './n8nbridge.js';
 import { createPublicLinkProvider } from './publiclink.js';
 import { activeSheetConfig } from './active.js';
+import { currentFirmId } from '../../firms.js';
 
-let provider = null;
-let providerKind = null;
+// One provider per firm, rebuilt when that firm's connection changes kind.
+const providers = new Map(); // firmId -> { kind, provider }
 
-export function getSheetProvider() {
-  const kind = activeSheetConfig().provider;
-  if (provider && providerKind === kind) return provider;
-  providerKind = kind;
+export function getSheetProvider(firmId = currentFirmId()) {
+  firmId = Number(firmId);
+  const kind = activeSheetConfig(firmId).provider;
+  const cached = providers.get(firmId);
+  if (cached && cached.kind === kind) return cached.provider;
+  let provider;
   switch (kind) {
-    case 'appsscript': provider = createAppsScriptProvider(); break;
-    case 'serviceaccount': provider = createServiceAccountProvider(); break;
-    case 'publiclink': provider = createPublicLinkProvider(); break;
-    case 'memory': provider = createMemoryProvider(); break;
+    case 'appsscript': provider = createAppsScriptProvider(firmId); break;
+    case 'serviceaccount': provider = createServiceAccountProvider(firmId); break;
+    case 'publiclink': provider = createPublicLinkProvider(firmId); break;
+    case 'memory': provider = createMemoryProvider(firmId); break;
     case 'n8n': provider = createN8nBridgeProvider(); break;
     default: provider = null;
   }
+  providers.set(firmId, { kind, provider });
   return provider;
 }
-// Call after the connection changes so the next call rebuilds the right provider.
-export function resetSheetProvider() { provider = null; providerKind = null; }
-export const sheetsConfigured = () => !!getSheetProvider();
+// Call after a firm's connection changes so the next call rebuilds the right provider.
+export function resetSheetProvider(firmId = currentFirmId()) { providers.delete(Number(firmId)); }
+export const sheetsConfigured = (firmId = currentFirmId()) => !!getSheetProvider(firmId);

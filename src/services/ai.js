@@ -2,6 +2,7 @@
 // (intent, extracted corridor/budget/timeline, qualified, hand-off) as JSON.
 import { config } from '../config.js';
 import { getSetting } from '../settings.js';
+import { currentFirmId } from '../firms.js';
 import { log } from '../logger.js';
 import { createLimiter } from '../util/limit.js';
 
@@ -11,7 +12,9 @@ export const aiQueueStats = () => aiLimit.stats();
 
 export const INTENTS = ['greeting', 'interest', 'question', 'price', 'location', 'loan', 'visit', 'callback', 'language', 'opt_out', 'complaint', 'unrelated', 'other'];
 
-const OUTPUT_CONTRACT = `
+// The JSON contract every reply follows. The hand-off line names the lead's firm, and what counts as "qualified"
+// is the firm's own rule (ai_qualify_rule): corridor + budget for a property firm, something else elsewhere.
+const outputContract = (firmId) => `
 OUTPUT FORMAT — respond with ONE JSON object only, no markdown, with exactly these keys:
 {
   "reply": "the WhatsApp message to send to the buyer (plain text, line breaks allowed)",
@@ -21,12 +24,12 @@ OUTPUT FORMAT — respond with ONE JSON object only, no markdown, with exactly t
   "budget": "budget range the buyer mentioned, if known (else null)",
   "timeline": "when they want to buy, if known (else null)",
   "configuration": "unit type/size they want, if known (else null)",
-  "qualified": true if BOTH corridor and budget are now known OR the buyer asked for a site visit / call, else false,
+  "qualified": true if ${getSetting('ai_qualify_rule', firmId)}, else false,
   "handoff": true if a human consultant should take over now (buyer asks for a visit, a call, exact prices/availability, a complaint, an angry message, wants to talk to a person, or asks something you cannot answer from the facts), else false,
   "handoff_reason": "short reason when handoff is true, else null",
   "sentiment": "positive" | "neutral" | "negative"
 }
-When handoff is true, your reply must tell the buyer a Neopolis consultant will connect with them shortly (do not promise a specific time).`;
+When handoff is true, your reply must tell the buyer a ${getSetting('company_name', firmId)} consultant will connect with them shortly (do not promise a specific time).`;
 
 function leadFacts(lead) {
   const facts = [];
@@ -42,7 +45,8 @@ function leadFacts(lead) {
 }
 
 export function buildMessages({ lead, history, inboundText }) {
-  const system = `${getSetting('ai_system_prompt')}\n\n${leadFacts(lead)}\n${OUTPUT_CONTRACT}`;
+  const firmId = lead.firm_id || currentFirmId();
+  const system = `${getSetting('ai_system_prompt', firmId)}\n\n${leadFacts(lead)}\n${outputContract(firmId)}`;
   const msgs = [{ role: 'system', content: system }];
   for (const m of history) {
     if (m.direction === 'in') msgs.push({ role: 'user', content: m.body || `[${m.type}]` });
@@ -52,7 +56,7 @@ export function buildMessages({ lead, history, inboundText }) {
   return msgs;
 }
 
-function coerce(obj, inboundText) {
+function coerce(obj, inboundText, firmId = currentFirmId()) {
   const s = (v) => (v == null || v === '' || v === 'null' ? null : String(v).trim().slice(0, 120));
   const out = {
     reply: String(obj.reply || '').trim(),
@@ -64,7 +68,7 @@ function coerce(obj, inboundText) {
     handoff_reason: s(obj.handoff_reason),
     sentiment: ['positive', 'neutral', 'negative'].includes(obj.sentiment) ? obj.sentiment : 'neutral',
   };
-  if (!out.reply) out.reply = getSetting('ai_fallback_reply');
+  if (!out.reply) out.reply = getSetting('ai_fallback_reply', firmId);
   return out;
 }
 
@@ -109,14 +113,15 @@ export async function generateReply(args) {
 
 async function generateReplyInner({ lead, history, inboundText }) {
   const started = Date.now();
+  const firmId = lead.firm_id || currentFirmId();
   if (config.ai.mock || config.ai.provider === 'mock') {
-    return { ...coerce(mockReply({ lead, inboundText }), inboundText), model: 'mock', latency_ms: Date.now() - started };
+    return { ...coerce(mockReply({ lead, inboundText }), inboundText, firmId), model: 'mock', latency_ms: Date.now() - started };
   }
   if (!config.ai.apiKey) throw new Error('AI is not configured (OPENROUTER_API_KEY missing)');
-  const model = getSetting('ai_model');
+  const model = getSetting('ai_model', firmId);
   const body = {
     model,
-    temperature: Number(getSetting('ai_temperature')),
+    temperature: Number(getSetting('ai_temperature', firmId)),
     max_tokens: 600,
     response_format: { type: 'json_object' },
     messages: buildMessages({ lead, history, inboundText }),
@@ -135,9 +140,51 @@ async function generateReplyInner({ lead, history, inboundText }) {
     const json = JSON.parse(text);
     const content = json.choices?.[0]?.message?.content || '';
     const parsed = parseJsonLoose(content);
-    if (!parsed) { log.warn('AI returned non-JSON; using raw text as reply'); return { ...coerce({ reply: content }, inboundText), model, latency_ms: Date.now() - started, usage: json.usage }; }
-    return { ...coerce(parsed, inboundText), model, latency_ms: Date.now() - started, usage: json.usage };
+    if (!parsed) { log.warn('AI returned non-JSON; using raw text as reply'); return { ...coerce({ reply: content }, inboundText, firmId), model, latency_ms: Date.now() - started, usage: json.usage }; }
+    return { ...coerce(parsed, inboundText, firmId), model, latency_ms: Date.now() - started, usage: json.usage };
   } finally { clearTimeout(timer); }
+}
+
+// Is the AI key usable? Asked of the provider directly (OpenRouter: GET /key and /credits; OpenAI-style: GET
+// /models), so a dead key shows up at boot and in the hourly monitor, not only when a lead's reply falls back.
+// The key itself is never returned: only a masked form (like OpenRouter's own label) and its shape.
+export const maskKey = (k) => (k ? `${k.slice(0, 12)}…${k.slice(-4)}` : '');
+async function getJson(url, key) {
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15000) });
+  const text = await res.text();
+  let json = {}; try { json = JSON.parse(text); } catch { /* not JSON */ }
+  return { res, json, text };
+}
+export async function aiKeyHealth() {
+  if (config.ai.mock || config.ai.provider === 'mock') return { ok: true, mock: true };
+  const key = config.ai.apiKey;
+  const openrouter = config.ai.provider === 'openrouter';
+  if (!key) return { ok: false, detail: `${openrouter ? 'OPENROUTER_API_KEY' : 'OPENAI_API_KEY'} is not set` };
+  const shape = { key: maskKey(key), length: key.length };
+  if (openrouter && !key.startsWith('sk-or-')) shape.warning = 'does not start with sk-or- (every OpenRouter key does) — is it a key from another service?';
+  if (config.ai.apiKeyCleaned) shape.cleaned = 'quotes, spaces or "Bearer " were removed from the variable';
+  const url = `${config.ai.baseUrl}/${openrouter ? 'key' : 'models'}`;
+  try {
+    const { res, json, text } = await getJson(url, key);
+    if (!res.ok) {
+      const detail = json.error?.message || text.slice(0, 200) || res.statusText;
+      const hint = res.status === 401 || res.status === 403
+        ? (openrouter ? 'This key belongs to no OpenRouter account (deleted, mistyped, or from another service). Create one at https://openrouter.ai/keys and set OPENROUTER_API_KEY in Railway.' : 'The provider rejected this key.')
+        : '';
+      return { ok: false, status: res.status, detail, ...(hint ? { hint } : {}), ...shape };
+    }
+    if (!openrouter) return { ok: true, ...shape };
+    const d = json.data || {};
+    const out = { ok: true, ...shape, label: d.label || null, keyLimit: d.limit ?? null, keyRemaining: d.limit_remaining ?? null, usage: d.usage ?? null, freeTier: !!d.is_free_tier };
+    // Account balance: a valid key on an account with no credit still fails every paid model with 402.
+    try {
+      const c = await getJson(`${config.ai.baseUrl}/credits`, key);
+      if (c.res.ok && c.json.data) out.balance = Math.round(((c.json.data.total_credits || 0) - (c.json.data.total_usage || 0)) * 100) / 100;
+    } catch { /* balance is optional */ }
+    if (out.keyRemaining !== null && out.keyRemaining <= 0) return { ...out, ok: false, detail: 'This key has used up its credit limit', hint: 'Raise the key\'s limit on https://openrouter.ai/keys or create a new key.' };
+    if (out.balance !== undefined && out.balance <= 0) return { ...out, ok: false, detail: 'The OpenRouter account has no credit left', hint: 'Add credit on https://openrouter.ai/credits (paid models such as openai/gpt-4o-mini need it).' };
+    return out;
+  } catch (e) { return { ok: null, detail: `could not reach ${url}: ${e.message}`, ...shape }; }
 }
 
 // Quick connectivity test used from Settings

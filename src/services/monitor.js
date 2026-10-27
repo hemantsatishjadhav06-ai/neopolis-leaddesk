@@ -5,6 +5,7 @@ import { all, get, kvGet, kvSet, parseJson } from '../db.js';
 import { config } from '../config.js';
 import { log } from '../logger.js';
 import { tokenHealth } from './whatsapp.js';
+import { aiKeyHealth } from './ai.js';
 import { backupStatus } from './backup.js';
 import { spendSnapshot } from './guard.js';
 
@@ -88,8 +89,14 @@ export async function healthReport({ probeToken = true } = {}) {
     issues.push({ code: 'ai_errors', severity: 'high', message: `${aiErrors} AI generation errors in the last hour — leads are getting the fallback reply.` });
   }
 
-  const aiAuth = recentAiAuthError();
-  if (aiAuth) {
+  // The key is asked of the provider directly (hourly); the audit trail of failed replies is the fallback signal
+  // when the provider could not be reached. A key the provider accepts clears the issue at once.
+  const ai = probeToken ? await aiKeyHealth() : (kvGet('monitor.lastAi', null) || { ok: null });
+  if (probeToken) kvSet('monitor.lastAi', { ...ai, at: new Date().toISOString() });
+  const aiAuth = ai.ok === null ? recentAiAuthError() : null;
+  if (ai.ok === false) {
+    issues.push({ code: ai.status === 401 || ai.status === 403 ? 'ai_key_rejected' : 'ai_unavailable', severity: 'high', message: `AI key ${ai.key || ''} not usable: ${ai.detail}. ${ai.hint || ''} Every lead reply gets the fallback message until this is fixed.`.replace(/\s+/g, ' ').trim() });
+  } else if (aiAuth) {
     issues.push({ code: 'ai_key_rejected', severity: 'high', message: `The AI provider rejected the API key (${parseJson(aiAuth.data).error || 'auth error'}). Every lead reply is getting the fallback message — set a valid OPENROUTER_API_KEY.` });
   }
 
@@ -112,6 +119,7 @@ export async function healthReport({ probeToken = true } = {}) {
     ok: issues.filter(i => i.severity === 'critical').length === 0,
     checkedAt: new Date().toISOString(),
     whatsapp: wa,
+    ai,
     backup: bk,
     sends, aiErrors, spend,
     webhook: { auth: sec, verifiedAt: kvGet('webhook.verifiedAt', null), lastEventAt: lastEvent, quietHours: quietHours === null ? null : Math.round(quietHours * 10) / 10, lastRejectedAt: kvGet('webhook.lastRejectedAt', null) },

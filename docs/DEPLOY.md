@@ -25,6 +25,7 @@ Service → **Variables** → add (see `.env.example` for the full list):
 | `OPENROUTER_API_KEY` | your OpenRouter key |
 | `SPREADSHEET_ID` | `YOUR_SHEET_ID_HERE` |
 | `SHEETS_APPS_SCRIPT_URL` / `SHEETS_APPS_SCRIPT_SECRET` | from `docs/SHEET-CONNECTOR.md` |
+| `FIRMS` | optional: more firms with their own WhatsApp number and sheet, see `docs/FIRMS.md` |
 
 Paste secrets directly in Railway's Variables tab — they never need to be in the code or in chat.
 
@@ -50,6 +51,12 @@ Option B — **GitHub**: push the folder to a private repo, then Service → Set
 4. Settings → **Google Sheet** → **Test connection** → **Import now**. Leads appear under *Leads*.
 5. Send yourself a WhatsApp message to the business number → it appears in the Inbox with an AI reply within seconds.
 6. Settings → **Outreach**: review the journey text, click **Submit templates to Meta**, wait for APPROVED, then set send mode to `test`, use *Run now* with your own number, and finally switch to `live`.
+
+## Adding another firm
+
+Set `FIRMS` (or use Settings → Firms), then follow `docs/FIRMS.md`: register the firm's number from Settings → WhatsApp with that firm selected, submit its templates, test, go live. The webhook, token and Meta app are shared, so nothing else changes in Meta or Railway.
+
+The first deploy with firms rebuilds the `leads` table once (same number allowed in two firms). A snapshot named `leaddesk-pre-firms-<time>.db` is written to the backups folder first, and the logs say `Firms migration done: N leads moved to firm 1, M messages kept`.
 
 ## Operations
 

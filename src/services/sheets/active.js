@@ -1,10 +1,14 @@
-// The ACTIVE Google-Sheet connection. It can be set at runtime from Settings → Google Sheet
+// The ACTIVE Google-Sheet connection of a firm. It can be set at runtime from Settings → Google Sheet
 // (stored in the kv table) and, when set, overrides the environment defaults from config.js.
 // This is what makes "paste your sheet link and connect" work without a redeploy.
+// The environment's sheet variables (SPREADSHEET_ID, SHEETS_APPS_SCRIPT_URL, N8N_BRIDGE_URL …) are firm 1's;
+// every other firm has only the connection it was given.
 import { config } from '../../config.js';
 import { kvGet, kvSet } from '../../db.js';
+import { currentFirmId, isDefaultFirm, firmKey } from '../../firms.js';
 
 const KEY = 'sheet.connection';
+const NO_ENV = { provider: 'none', spreadsheetId: '', leadsTab: '', repliesTab: 'Client Replies', appsScriptUrl: '', appsScriptSecret: '', serviceAccountB64: '', n8nBridgeUrl: '', n8nBridgeSecret: '' };
 
 // Pull a spreadsheet id + optional gid (tab) out of a pasted Google Sheets URL or a raw id.
 export function parseSheetRef(input) {
@@ -16,9 +20,9 @@ export function parseSheetRef(input) {
 }
 
 // Merge the stored connection (if any) over the env defaults. Same shape as config.sheets, plus gid + readOnly.
-export function activeSheetConfig() {
-  const env = config.sheets;
-  const c = kvGet(KEY, null);
+export function activeSheetConfig(firmId = currentFirmId()) {
+  const env = isDefaultFirm(firmId) ? config.sheets : NO_ENV;
+  const c = kvGet(firmKey(KEY, firmId), null);
   if (!c || !c.provider) {
     return { ...env, gid: '', readOnly: false, source: 'env' };
   }
@@ -39,16 +43,16 @@ export function activeSheetConfig() {
 }
 
 // The leads tab(s) named in the connection: "02-08-2026, Sheet6" → ['02-08-2026', 'Sheet6']. Empty = auto-detect.
-export function configuredLeadTabs() {
-  return String(activeSheetConfig().leadsTab || '').split(',').map(s => s.trim()).filter(Boolean);
+export function configuredLeadTabs(firmId = currentFirmId()) {
+  return String(activeSheetConfig(firmId).leadsTab || '').split(',').map(s => s.trim()).filter(Boolean);
 }
 
-export function setSheetConnection(conn) { kvSet(KEY, conn); }
-export function clearSheetConnection() { kvSet(KEY, null); }
+export function setSheetConnection(conn, firmId = currentFirmId()) { kvSet(firmKey(KEY, firmId), conn); }
+export function clearSheetConnection(firmId = currentFirmId()) { kvSet(firmKey(KEY, firmId), null); }
 
 // A UI-safe view of the connection: never leaks the Apps Script secret or service-account key.
-export function sheetConnectionPublic() {
-  const c = activeSheetConfig();
+export function sheetConnectionPublic(firmId = currentFirmId()) {
+  const c = activeSheetConfig(firmId);
   return {
     provider: c.provider,
     source: c.source,

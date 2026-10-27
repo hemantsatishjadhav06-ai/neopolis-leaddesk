@@ -29,6 +29,10 @@ h1{font-size:20px}h2{font-size:16px}h3{font-size:14px}
 .brand{display:flex;align-items:center;gap:10px;padding:4px 8px 16px;color:#fff}
 .brand .logo{width:34px;height:34px;border-radius:9px;background:var(--gold);color:var(--navy);display:grid;place-items:center;font-weight:800;font-size:16px}
 .brand .name{font-weight:700;font-size:15px;line-height:1.1}.brand .sub{font-size:11px;color:#9fb0cf}
+.firm-switch{display:block;padding:0 8px 14px}
+.firm-switch .lbl{display:block;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:#9fb0cf;margin-bottom:4px}
+.sidebar .firm-switch select{background:rgba(255,255,255,.08);color:#fff;border-color:rgba(255,255,255,.2);padding:6px 8px;font-size:13px}
+.sidebar .firm-switch select option{color:#0f1f3d;background:#fff}
 .nav a{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;color:#c9d3e6;font-weight:500}
 .nav a:hover{background:rgba(255,255,255,.06);color:#fff}
 .nav a.active{background:rgba(201,162,39,.16);color:#fff}
@@ -184,7 +188,7 @@ pre.code{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:9px;overflo
 .steps{counter-reset:s}.steps li{margin-bottom:8px}
 .status-line{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px dashed var(--line);font-size:13px}.status-line:last-child{border-bottom:0}
 .status-line .lbl2{width:130px;color:var(--muted)}
-@media (max-width:900px){.shell{grid-template-columns:64px 1fr}.sidebar .brand .name,.sidebar .brand .sub,.nav a span.t,.userbox .info{display:none}.inbox{grid-template-columns:260px 1fr}.leadpane{display:none}.settings{grid-template-columns:1fr}}
+@media (max-width:900px){.firm-switch{padding:0 0 10px}.firm-switch .lbl{display:none}.sidebar .firm-switch select{padding:4px 2px;font-size:11px}.shell{grid-template-columns:64px 1fr}.sidebar .brand .name,.sidebar .brand .sub,.nav a span.t,.userbox .info{display:none}.inbox{grid-template-columns:260px 1fr}.leadpane{display:none}.settings{grid-template-columns:1fr}}
 
 .journey-step{border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px;background:#fafbfc}
 .journey-step .jh{display:flex;gap:8px;align-items:center;margin-bottom:8px}

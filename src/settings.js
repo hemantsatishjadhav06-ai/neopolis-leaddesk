@@ -1,6 +1,8 @@
 // User-editable settings (stored in SQLite, edited from the Settings screen).
 // Secrets never live here — they are environment variables (see config.js).
 import { all, run, nowIso } from './db.js';
+import { currentFirmId, isDefaultFirm, firmKey, getFirm } from './firms.js';
+import { presetFor } from './firm-presets.js';
 
 export const DEFAULT_SYSTEM_PROMPT = `You are the WhatsApp concierge for Neopolis Infra, a premium real-estate company in West Hyderabad (a Neopolis Group company). You chat with prospective home-buyers on WhatsApp in a warm, professional, concierge tone. Keep replies concise and WhatsApp-friendly (2-6 short lines, no long paragraphs, at most one emoji). Reply in the buyer's language — English by default; if they write in Hindi or Telugu, reply in that language.
 
@@ -51,6 +53,7 @@ export const DEFAULTS = {
   ai_system_prompt: DEFAULT_SYSTEM_PROMPT,
   ai_history_messages: 16,
   ai_fallback_reply: 'Thank you for your message. One of our property consultants will get back to you shortly.',
+  ai_qualify_rule: 'BOTH corridor and budget are now known OR the buyer asked for a site visit / call',
   ai_enabled: true,
   default_mode: 'ai',                   // ai | human — mode for new leads
   auto_handoff: true,                   // AI hands over to sales when a lead qualifies / asks for a human
@@ -93,6 +96,12 @@ export const DEFAULTS = {
   app_name: 'Neopolis LeadDesk',
 };
 
+// Settings that belong to one firm. A firm other than firm 1 starts from its own preset (firm-presets.js) for
+// these and never inherits firm 1's: not its send/reply mode, not its test numbers, not its messages or the
+// AI's knowledge. Every other setting (model, pacing, send window …) follows firm 1 until the firm saves its own.
+export const FIRM_OWN = ['company_name', 'ai_system_prompt', 'ai_fallback_reply', 'ai_qualify_rule', 'optout_reply', 'template_footer', 'journey_steps', 'send_mode', 'reply_mode', 'test_recipients'];
+const FIRM_SAFE = { send_mode: 'off', reply_mode: 'test', test_recipients: '' };
+
 const cache = new Map();
 let loaded = false;
 
@@ -104,14 +113,26 @@ function load() {
   loaded = true;
 }
 
-export function getSetting(key) {
+// The value a firm uses when it has not saved one: DEFAULTS for firm 1, its preset / safe value for a firm-owned
+// setting, otherwise whatever firm 1 uses.
+export function firmDefaults(firmId = currentFirmId()) {
+  if (isDefaultFirm(firmId)) return DEFAULTS;
+  return { ...DEFAULTS, ...presetFor(getFirm(firmId)), ...FIRM_SAFE };
+}
+
+export function getSetting(key, firmId = currentFirmId()) {
   if (!loaded) load();
+  if (!isDefaultFirm(firmId)) {
+    const own = firmKey(key, firmId);
+    if (cache.has(own)) return cache.get(own);
+    if (FIRM_OWN.includes(key)) return firmDefaults(firmId)[key];
+  }
   return cache.has(key) ? cache.get(key) : DEFAULTS[key];
 }
-export function getSettings() {
+export function getSettings(firmId = currentFirmId()) {
   if (!loaded) load();
   const out = {};
-  for (const k of Object.keys(DEFAULTS)) out[k] = cache.has(k) ? cache.get(k) : DEFAULTS[k];
+  for (const k of Object.keys(DEFAULTS)) out[k] = getSetting(k, firmId);
   return out;
 }
 // Settings whose value must be one of a fixed set. Writing anything else is rejected outright —
@@ -122,7 +143,7 @@ export const ENUMS = {
   default_mode: ['ai', 'human'],
 };
 
-export function setSettings(patch) {
+export function setSettings(patch, firmId = currentFirmId()) {
   if (!loaded) load();
   const ts = nowIso();
   const bad = Object.entries(patch)
@@ -136,22 +157,25 @@ export function setSettings(patch) {
     if (typeof d === 'number') val = Number(v);
     else if (typeof d === 'boolean') val = (v === true || v === 'true' || v === 1 || v === '1' || v === 'on');
     else val = v == null ? '' : String(v);
-    run('INSERT INTO settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at', k, JSON.stringify(val), ts);
-    cache.set(k, val);
+    const key = firmKey(k, firmId);
+    run('INSERT INTO settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at', key, JSON.stringify(val), ts);
+    cache.set(key, val);
   }
-  return getSettings();
+  return getSettings(firmId);
 }
 export function listFromCsv(s) { return String(s || '').split(/[,\n;]/).map(x => x.trim()).filter(Boolean); }
 
-// Parsed, validated journey (sorted by day). Invalid JSON falls back to the default journey.
-export function getJourney() {
+// Parsed, validated journey (sorted by day). For firm 1 invalid JSON or an empty list falls back to the default
+// journey; another firm's empty journey stays empty (that is how its outreach is switched off).
+export function getJourney(firmId = currentFirmId()) {
+  const fallback = isDefaultFirm(firmId) ? DEFAULT_JOURNEY : [];
   let steps;
-  try { steps = JSON.parse(getSetting('journey_steps')); } catch { steps = DEFAULT_JOURNEY; }
-  if (!Array.isArray(steps) || !steps.length) steps = DEFAULT_JOURNEY;
+  try { steps = JSON.parse(getSetting('journey_steps', firmId)); } catch { steps = fallback; }
+  if (!Array.isArray(steps) || !steps.length) steps = fallback;
   return steps
     .filter(s => s && s.template)
     .map((s, i) => ({ key: String(s.key || `s${i}`), day: Math.max(0, Number(s.day) || 0), template: String(s.template).trim(), text: String(s.text || ''), buttons: Array.isArray(s.buttons) ? s.buttons.map(b => String(b).trim()).filter(Boolean).slice(0, 3) : [] }))
     .sort((a, b) => a.day - b.day);
 }
-export const journeyStep = (key) => getJourney().find(s => s.key === key) || null;
+export const journeyStep = (key, firmId = currentFirmId()) => getJourney(firmId).find(s => s.key === key) || null;
 export const journeyStatus = (index) => (index <= 0 ? 'CONTACTED' : `FOLLOWUP_${Math.min(index, 5)}`);

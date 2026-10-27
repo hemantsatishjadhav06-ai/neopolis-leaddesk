@@ -9,10 +9,15 @@ import { apiRouter } from './routes/api.js';
 import { webhookRouter } from './routes/webhook.js';
 import { ingestRouter } from './routes/ingest.js';
 import { bootstrapAdmin } from './services/auth.js';
+import { seedFirmsFromEnv } from './services/firm-setup.js';
+import { listFirms, firmPhoneNumberId } from './firms.js';
 import { startScheduler } from './services/scheduler.js';
 import { clientCount } from './services/events.js';
 import { healthReport } from './services/monitor.js';
 import { runBackup } from './services/backup.js';
+import { aiKeyHealth } from './services/ai.js';
+import { listPhoneNumbers } from './services/whatsapp.js';
+import { kvSet } from './db.js';
 import { db } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -53,6 +58,7 @@ app.get('/health/ready', async (req, res) => {
       webhookAuth: r.webhook.auth,
       backupOk: !!r.backup?.last?.ok && !r.backup?.stale,
       whatsappOk: r.whatsapp?.ok !== false,
+      aiOk: r.ai?.ok !== false,
       issues: r.issues.map(i => ({ code: i.code, severity: i.severity })),
     });
   } catch (e) { res.status(500).json({ ok: false, error: 'health check failed' }); }
@@ -63,7 +69,8 @@ app.use('/api', attachUser, apiRouter);
 
 // Static UI
 const pub = path.join(__dirname, '..', 'public');
-app.use(express.static(pub, { index: false, maxAge: '1h', etag: true }));
+// Scripts and styles revalidate on every load (a cheap 304), so a deploy never pairs a new module with a cached old one.
+app.use(express.static(pub, { index: false, maxAge: '1h', etag: true, setHeaders: (res, file) => { if (/\.(js|css)$/.test(file)) res.setHeader('Cache-Control', 'no-cache'); } }));
 app.get('*', (req, res) => {
   if (req.path.startsWith('/api') || req.path.startsWith('/webhook')) return res.status(404).json({ error: 'Not found' });
   res.sendFile(path.join(pub, 'index.html'));
@@ -76,6 +83,7 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
 });
 
 bootstrapAdmin();
+seedFirmsFromEnv();
 
 // Loud, unmissable warning if the public webhook is not authenticated.
 if (!config.whatsapp.appSecret && !config.security.webhookPathToken) {
@@ -89,10 +97,28 @@ if (!config.whatsapp.appSecret && !config.security.webhookPathToken) {
 const server = app.listen(config.port, () => {
   log.info(`Neopolis LeadDesk listening on :${config.port}`);
   log.info('Config', configSummary());
+  log.info('Firms', listFirms().map(f => ({ id: f.id, name: f.name, number: f.display_number || null, phoneNumberId: firmPhoneNumberId(f) || null, active: !!f.active })));
   startScheduler();
   // Always have a fresh copy from the moment this build goes live.
   runBackup({ reason: 'startup' }).catch(e => log.error('Startup backup failed', e));
+  startupChecks().catch(e => log.error('Startup checks failed', e));
 });
+
+// Say at boot whether the AI key works and which numbers each WhatsApp Business Account holds (Meta caps
+// registered numbers per business portfolio), so both are in the logs before anyone needs them.
+async function startupChecks() {
+  const ai = await aiKeyHealth();
+  kvSet('monitor.lastAi', { ...ai, at: new Date().toISOString() });
+  if (ai.ok === false) log.error('AI key check: NOT usable — every lead reply gets the fallback message', ai);
+  else log.info(`AI key check: ${ai.ok ? 'OK' : 'could not be checked'}`, ai);
+  if (config.whatsapp.mock || !config.whatsapp.token) return;
+  for (const waba of new Set(listFirms().map(f => f.waba_id || config.whatsapp.wabaId).filter(Boolean))) {
+    try {
+      const nums = (await listPhoneNumbers(waba)).data || [];
+      log.info(`WhatsApp numbers on WABA ${waba} (${nums.length})`, nums.map(n => ({ id: n.id, number: n.display_phone_number, name: n.verified_name, status: n.status, verification: n.code_verification_status, quality: n.quality_rating })));
+    } catch (e) { log.warn(`Could not list the numbers on WABA ${waba}: ${e.message}`); }
+  }
+}
 
 let shuttingDown = false;
 function shutdown(signal) {

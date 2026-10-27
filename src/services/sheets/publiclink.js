@@ -25,8 +25,8 @@ export function parseCsv(text) {
   return rows;
 }
 
-async function fetchCsv() {
-  const c = activeSheetConfig();
+async function fetchCsv(firmId) {
+  const c = activeSheetConfig(firmId);
   if (!c.spreadsheetId) throw new Error('No spreadsheet linked yet.');
   const base = `https://docs.google.com/spreadsheets/d/${c.spreadsheetId}`;
   // Try, in order: exact tab by gid, exact tab by name (gviz), then the first sheet.
@@ -55,8 +55,8 @@ async function fetchCsv() {
 
 // Every tab of the workbook in one request. The CSV export only gives one tab, and only the one whose gid
 // happened to be in the pasted link, which is how an import ended up reading a "visits list" tab.
-async function fetchWorkbook() {
-  const c = activeSheetConfig();
+async function fetchWorkbook(firmId) {
+  const c = activeSheetConfig(firmId);
   if (!c.spreadsheetId) throw new Error('No spreadsheet linked yet.');
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 60000);
@@ -67,18 +67,18 @@ async function fetchWorkbook() {
   } finally { clearTimeout(timer); }
 }
 
-export function createPublicLinkProvider() {
+export function createPublicLinkProvider(firmId) {
   const provider = {
     name: 'publiclink',
     readOnly: true,
     ping: async () => {
-      const table = parseCsv(await fetchCsv());
+      const table = parseCsv(await fetchCsv(firmId));
       const headers = table[0] || [];
       return { ok: true, mode: 'read-only (link)', rows: Math.max(0, table.length - 1), headers };
     },
     readLeads: async () => {
-      const c = activeSheetConfig();
-      const table = parseCsv(await fetchCsv());
+      const c = activeSheetConfig(firmId);
+      const table = parseCsv(await fetchCsv(firmId));
       const headers = table[0] || [];
       const rows = [];
       for (let i = 1; i < table.length; i++) {
@@ -90,7 +90,7 @@ export function createPublicLinkProvider() {
     },
     readTables: async () => {
       try {
-        return (await fetchWorkbook()).map(s => {
+        return (await fetchWorkbook(firmId)).map(s => {
           const headers = s.rows.find(r => r.rowNumber === 1)?.values || [];
           const rows = s.rows.filter(r => r.rowNumber > 1 && r.values.some(x => String(x).trim() !== ''))
             .map(r => ({ rowNumber: r.rowNumber, values: headers.map((_, j) => r.values[j] ?? '') }));
