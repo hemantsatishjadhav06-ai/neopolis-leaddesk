@@ -139,7 +139,7 @@ export async function renderSettings(el, route) {
       <div class="grid c2">
         <div class="card"><div class="card-h"><h2>Numbers on this account</h2></div><div class="card-b">
           ${numbers.length ? `<table class="tbl">${numbers.map(n => `<tr><td><b>${esc(n.display_phone_number)}</b><div class="small muted">${esc(n.verified_name)} · id ${esc(n.id)}</div></td><td class="small">${esc(n.code_verification_status || '')}<br>${esc(n.status || '')}</td><td class="right">${useBtn(n)}</td></tr>`).join('')}</table>` : `<div class="small muted">${esc(st.numbers?.error || 'No numbers yet.')}</div>`}
-          <details class="mt8" ${!main && !f.phone_number_id ? 'open' : ''}><summary class="small" style="cursor:pointer">Register ${main ? 'a new number' : `${esc(f.name)}’s number`} (wizard)</summary>
+          <details class="mt8" ${!main && phone?.status !== 'CONNECTED' ? 'open' : ''}><summary class="small" style="cursor:pointer">Register ${main ? 'a new number' : `${esc(f.name)}’s number`} (wizard)</summary>
             <div class="stack mt8">
               <div class="row"><input type="text" id="r-num" placeholder="10-digit number, e.g. 9876543210" value="${esc(main ? '' : national)}"><input type="text" id="r-name" placeholder="Display name" value="${esc(main ? (view.settings.company_name || '') : f.name || '')}" style="width:180px"><button class="btn sm" data-act="wa-add">1. Add</button></div>
               <div class="row"><input type="text" id="r-pid" placeholder="phone_number_id (from step 1 or the list above)" value="${esc(main ? '' : f.phone_number_id || '')}"><button class="btn sm" data-act="wa-code">2. Send SMS code</button></div>
