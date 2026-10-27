@@ -44,6 +44,11 @@ If the number was already added in WhatsApp Manager, it appears under *Numbers o
 
 Meta reviews the display name. A name that doesn't match the business on the WhatsApp Business Account can be rejected; you'll see Meta's answer in the wizard.
 
+**"To use this phone number, you'll need to delete an existing one … (subcode 2388386)"** means the Meta business portfolio already holds its cap of registered numbers. The cap is 2 until the business is verified, or until it reaches the 2,000 messaging tier; then it is 20. The cap counts every WhatsApp account in the portfolio, not just the one LeadDesk uses; LeadDesk logs the numbers on its own account at boot (`WhatsApp numbers on WABA …`). Either:
+
+- delete a number you no longer use: WhatsApp Manager → Phone numbers, checking every WhatsApp account in the dropdown. A number can't be deleted if it sent paid messages in the last 30 days.
+- or verify the business: Meta Business Suite → Settings → Security Centre → Business verification. Meta then raises the cap to 20 automatically.
+
 ## Going live
 
 1. **Settings → AI concierge**: check what the AI knows about the firm.
